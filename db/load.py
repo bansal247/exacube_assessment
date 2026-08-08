@@ -377,16 +377,60 @@ def load_channel_daily_stats(cur, rows: list[dict]) -> None:
     print(f"channel_daily_stats: upserted {len(rows)} rows")
 
 
+def provision_api_role(cur, db_name: str) -> None:
+    """Create (or update) the least-privilege, SELECT-only role the FastAPI
+    service connects as. Idempotent: safe to run every load.
+
+    Kept separate from schema.sql because role/grant DDL needs identifiers
+    and a password interpolated safely (psycopg.sql.Identifier/Literal),
+    which schema.sql's plain-text execute() can't parameterize.
+    """
+    role = os.environ["API_DB_USER"]
+    password = os.environ["API_DB_PASSWORD"]
+
+    cur.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (role,))
+    if cur.fetchone():
+        cur.execute(
+            sql.SQL("ALTER ROLE {} WITH LOGIN PASSWORD {}").format(
+                sql.Identifier(role), sql.Literal(password)
+            )
+        )
+    else:
+        cur.execute(
+            sql.SQL("CREATE ROLE {} WITH LOGIN PASSWORD {}").format(
+                sql.Identifier(role), sql.Literal(password)
+            )
+        )
+
+    cur.execute(sql.SQL("GRANT CONNECT ON DATABASE {} TO {}").format(
+        sql.Identifier(db_name), sql.Identifier(role)
+    ))
+    cur.execute(sql.SQL("GRANT USAGE ON SCHEMA public TO {}").format(sql.Identifier(role)))
+    cur.execute(sql.SQL("GRANT SELECT ON ALL TABLES IN SCHEMA public TO {}").format(sql.Identifier(role)))
+    cur.execute(
+        sql.SQL("ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO {}").format(
+            sql.Identifier(role)
+        )
+    )
+    print(f"api role: provisioned '{role}' with SELECT-only access")
+
+
 def main() -> None:
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
         raise SystemExit("DATABASE_URL environment variable is required")
+    db_name = os.environ.get("POSTGRES_DB")
+    if not db_name:
+        raise SystemExit("POSTGRES_DB environment variable is required")
+    if not os.environ.get("API_DB_USER") or not os.environ.get("API_DB_PASSWORD"):
+        raise SystemExit("API_DB_USER and API_DB_PASSWORD environment variables are required")
 
     schema_sql = (Path(__file__).resolve().parent / "schema.sql").read_text()
 
     with psycopg.connect(dsn) as conn:
         with conn.cursor() as cur:
             cur.execute(schema_sql)
+            provision_api_role(cur, db_name)
         conn.commit()
 
         with conn.cursor() as cur:
