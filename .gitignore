@@ -1,0 +1,4 @@
+.synthetic-discord-analytics-dataset.zip
+.env
+.claude
+*__pycache__/
