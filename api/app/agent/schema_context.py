@@ -1,24 +1,35 @@
 """Hand-written summary of db/schema.sql for the system prompt and the query
-plugin's tool description. Not introspected from the DB at runtime -- there
-are only 8 tables and they change rarely, so a maintained description is
-simpler than a live-introspection path, at the cost of needing to keep this
-in sync by hand when schema.sql changes (noted here deliberately so it's
-not a silent trap).
+plugin's tool description. Only the six analytics tables -- never
+chat_sessions/chat_messages/pinned_artifacts, which exist for the agent's
+own session bookkeeping, not as part of "the dataset" it answers questions
+about. Not introspected from the DB at runtime -- there are only a handful
+of tables and they change rarely, so a maintained description is simpler
+than a live-introspection path, at the cost of needing to keep this in sync
+by hand when schema.sql changes.
+
+That cost is real, not hypothetical: `members` was missing discriminator
+and avatar_hash here (both real columns) until a live eval run showed the
+agent writing `NULL AS discriminator, NULL AS avatar_hash` instead of
+actually selecting them -- it had no way to know those columns existed. If
+a question about a column comes back suspiciously null/missing, check here
+before assuming the agent reasoned wrong.
 """
 
 SCHEMA_DESCRIPTION = """\
 Tables (all timestamps are UTC):
 
 servers(server_id PK, server_name, owner_id, creation_date, region,
-  verification_level, premium_tier, premium_subscription_count,
-  approximate_member_count, approximate_presence_count, ...)
+  verification_level, default_message_notifications, explicit_content_filter,
+  system_channel_id, afk_channel_id, afk_timeout, widget_enabled,
+  premium_tier, premium_subscription_count, approximate_member_count,
+  approximate_presence_count)
 
 channels(channel_id PK, server_id FK->servers, channel_name, channel_type
   ['text'|'voice'], topic, nsfw, rate_limit_per_user, position)
 
 members(user_id, server_id, PK(user_id, server_id), FK server_id->servers,
-  username, display_name, is_bot, join_date, last_active, roles (text[]),
-  messages_sent, voice_minutes, is_owner)
+  username, display_name, discriminator, avatar_hash, is_bot, join_date,
+  last_active, roles (text[]), messages_sent, voice_minutes, is_owner)
   -- messages_sent/voice_minutes here are lifetime totals from the source
   -- data, not derived from the messages table below.
 

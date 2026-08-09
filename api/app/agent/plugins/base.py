@@ -18,16 +18,17 @@ What the interface owes the system, and how each is handled:
   SOURCE_CALL_ID_ARG. The loop (not each plugin) validates that the
   referenced call actually happened and actually was of the declared kind
   before calling execute() -- one enforcement point, not one per plugin.
-- Streaming progress: `execute()` takes an optional `on_progress` callback
-  -- `await on_progress("message")` any number of times before returning.
-  Non-streaming callers (AgentLoop.run()) simply don't pass one (defaults
-  to None; plugins must no-op if it's absent, never assume it's there).
-  The streaming loop path passes a real one that forwards each call as a
-  ToolProgress stage event.
 - Artifacts -- pinning and downloading: `display_kind` declares how a
-  result should render on a dashboard ("table" | "chart" | "file"; "file"
-  means download-only, not inline-previewable -- see Pinning in the
-  README). `to_file()` is how a plugin *optionally* offers a real
+  result should render on a dashboard ("table" | "chart" | "image" | "file").
+  "table"/"chart"/"image" preview inline; "file" is download-only. "chart"
+  and "image" are deliberately distinct: "chart" means a spec a charting
+  library renders (what `chart.py` returns); "image" means the plugin's
+  `data` already *is* displayable image content (e.g. a URL, or base64) --
+  a future plugin producing actual pictures (not a data-viz spec) would use
+  this, and its `to_file()` would return the raw image bytes for download.
+  No such plugin exists yet -- this is contract surface only, added so the
+  gap (a real image doesn't fit "chart" or "file") doesn't block a future
+  plugin author. `to_file()` is how a plugin *optionally* offers a real
   downloadable export of its own result -- the default implementation
   returns None (not downloadable via the backend at all), and each plugin
   that wants to be downloadable overrides it and owns its own export
@@ -38,21 +39,18 @@ What the interface owes the system, and how each is handled:
 """
 
 from abc import ABC, abstractmethod
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 if TYPE_CHECKING:
     import asyncpg
 
-OnProgress = Callable[[str], Awaitable[None]]
-
 # Fixed argument name a consuming plugin's input_schema must use for the
 # upstream call it reads from -- one convention, not a per-plugin field
 # name, so the loop can validate it generically.
 SOURCE_CALL_ID_ARG = "source_call_id"
 
-DisplayKind = Literal["table", "chart", "file"]
+DisplayKind = Literal["table", "chart", "image", "file"]
 
 
 class PluginError(Exception):
@@ -124,13 +122,11 @@ class Plugin(ABC):
     # chart.consumes = "query".
     consumes: ClassVar[str | None] = None
     # How this plugin's result should render on a dashboard/pin tile.
-    # "table" and "chart" preview inline; "file" is download-only.
+    # "table"/"chart"/"image" preview inline; "file" is download-only.
     display_kind: ClassVar[DisplayKind]
 
     @abstractmethod
-    async def execute(
-        self, arguments: dict, context: PluginContext, on_progress: OnProgress | None = None
-    ) -> PluginResult: ...
+    async def execute(self, arguments: dict, context: PluginContext) -> PluginResult: ...
 
     async def to_file(self, data: Any) -> ArtifactFile | None:
         """Optional: render this plugin's result data as a downloadable

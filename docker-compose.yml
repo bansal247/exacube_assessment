@@ -47,10 +47,14 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
       AGENT_DATABASE_URL: postgresql://${AGENT_DB_USER}:${AGENT_DB_PASSWORD}@db:5432/${POSTGRES_DB}
+      LLM_PROVIDER: ${LLM_PROVIDER:-openai}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
-      AGENT_MODEL: ${AGENT_MODEL:-claude-3-5-sonnet-20241022}
+      AGENT_MODEL: ${AGENT_MODEL:-gpt-4o-mini}
       AGENT_MAX_TOOL_RETRIES: ${AGENT_MAX_TOOL_RETRIES:-2}
       AGENT_ROW_CAP: ${AGENT_ROW_CAP:-1000}
+      AGENT_QUERY_TIMEOUT_MS: ${AGENT_QUERY_TIMEOUT_MS:-5000}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
     ports:
       - "${API_PORT:-8000}:8000"
     depends_on:
@@ -61,6 +65,23 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  eval:
+    build:
+      context: .
+      dockerfile: eval/Dockerfile
+    profiles: ["tools"]
+    environment:
+      EVAL_API_BASE_URL: http://api:8000
+      EVAL_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+    volumes:
+      # Results need to land somewhere that survives this throwaway
+      # container exiting -- host bind mount, not a named volume, so
+      # they're just files you can open directly afterward.
+      - ./eval/results:/app/results
+    depends_on:
+      api:
+        condition: service_healthy
 
 volumes:
   pgdata:

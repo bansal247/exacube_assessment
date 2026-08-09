@@ -151,7 +151,7 @@ CREATE TABLE IF NOT EXISTS pinned_artifacts (
     session_id           UUID NOT NULL REFERENCES chat_sessions(session_id) ON DELETE CASCADE,
     source_tool_call_id  TEXT NOT NULL,
     plugin_name          TEXT NOT NULL,
-    display_kind         TEXT NOT NULL CHECK (display_kind IN ('table', 'chart', 'file')),
+    display_kind         TEXT NOT NULL CHECK (display_kind IN ('table', 'chart', 'image', 'file')),
     title                TEXT NOT NULL,
     call_chain           JSONB NOT NULL,
     cached_data          JSONB NOT NULL,

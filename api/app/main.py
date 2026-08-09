@@ -4,12 +4,27 @@ from fastapi import FastAPI
 
 from app.agent.anthropic_provider import AnthropicProvider
 from app.agent.loop import AgentLoop
+from app.agent.openai_provider import OpenAIProvider
 from app.agent.plugins.registry import discover_plugins
+from app.agent.provider import LLMProvider
 from app.agent.service import ChatService
 from app.config import settings
 from app.db import connect_agent_pool, connect_pool, disconnect_agent_pool, disconnect_pool
 from app.errors import register_exception_handlers
+from app.logging_config import configure_logging
 from app.routers import activity, channels, chat, health, members, pins, servers
+from app.tracing import TraceIdMiddleware
+
+# Configured at import time, not inside lifespan -- log lines from module
+# import/startup itself (plugin discovery, provider construction) should
+# also be JSON, not go out via Python's default unconfigured handler first.
+configure_logging(settings.log_level)
+
+
+def _build_provider() -> LLMProvider:
+    if settings.llm_provider == "openai":
+        return OpenAIProvider(api_key=settings.openai_api_key, model=settings.agent_model)
+    return AnthropicProvider(api_key=settings.anthropic_api_key, model=settings.agent_model)
 
 
 @asynccontextmanager
@@ -18,8 +33,7 @@ async def lifespan(app: FastAPI):
     await connect_agent_pool()
 
     discover_plugins()
-    provider = AnthropicProvider(api_key=settings.anthropic_api_key, model=settings.agent_model)
-    loop = AgentLoop(provider=provider, max_tool_retries=settings.agent_max_tool_retries)
+    loop = AgentLoop(provider=_build_provider(), max_tool_retries=settings.agent_max_tool_retries)
     app.state.chat_service = ChatService(loop=loop)
 
     yield
@@ -29,6 +43,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Discord Analytics API", lifespan=lifespan)
+app.add_middleware(TraceIdMiddleware)
 register_exception_handlers(app)
 
 app.include_router(health.router)

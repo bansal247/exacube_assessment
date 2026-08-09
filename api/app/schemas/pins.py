@@ -23,7 +23,7 @@ class Pin(BaseModel):
     pin_id: UUID
     session_id: UUID
     plugin_name: str
-    display_kind: Literal["table", "chart", "file"]
+    display_kind: Literal["table", "chart", "image", "file"]
     title: str
     call_chain: list[ChainStepOut]
     cached_data: Any

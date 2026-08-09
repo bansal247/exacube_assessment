@@ -1,5 +1,9 @@
-from app.agent.plugins.base import SOURCE_CALL_ID_ARG, OnProgress, Plugin, PluginContext, PluginError, PluginResult
+import logging
+
+from app.agent.plugins.base import SOURCE_CALL_ID_ARG, Plugin, PluginContext, PluginError, PluginResult
 from app.agent.plugins.registry import register_plugin
+
+logger = logging.getLogger(__name__)
 
 # Field requirements per chart_type -- kept as plain Python rather than a
 # JSON Schema oneOf/if-then (which can express "y_field required when
@@ -48,9 +52,7 @@ class ChartPlugin(Plugin):
         "required": [SOURCE_CALL_ID_ARG, "chart_type", "title"],
     }
 
-    async def execute(
-        self, arguments: dict, context: PluginContext, on_progress: OnProgress | None = None
-    ) -> PluginResult:
+    async def execute(self, arguments: dict, context: PluginContext) -> PluginResult:
         chart_type = arguments.get("chart_type")
         title = arguments.get("title")
         if chart_type not in _REQUIRED_FIELDS:
@@ -64,9 +66,6 @@ class ChartPlugin(Plugin):
                 f"chart_type '{chart_type}' requires {_REQUIRED_FIELDS[chart_type]}; missing {missing}",
                 retryable=True,
             )
-
-        if on_progress:
-            await on_progress(f"Building {chart_type} chart...")
 
         # The loop already validated source_call_id refers to a completed
         # 'query' call (Plugin.consumes) before calling execute() at all.
@@ -95,6 +94,7 @@ class ChartPlugin(Plugin):
             # snapshot (see Pinning in the README).
             "sql": source_data.get("sql"),
         }
+        logger.info("chart built", extra={"chart_type": chart_type, "row_count": len(rows)})
         return PluginResult(
             data=spec,
             llm_summary=f"Created a {chart_type} chart '{title}' with {len(rows)} data point(s).",

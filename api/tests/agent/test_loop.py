@@ -20,7 +20,7 @@ class EchoPlugin(Plugin):
     description = "echoes its input back"
     input_schema = {"type": "object", "properties": {"value": {"type": "string"}}}
 
-    async def execute(self, arguments, context, on_progress=None):
+    async def execute(self, arguments, context):
         return PluginResult(data={"echoed": arguments.get("value")}, llm_summary=f"echoed {arguments.get('value')!r}")
 
 
@@ -29,7 +29,7 @@ class AlwaysFailsPlugin(Plugin):
     description = "always raises"
     input_schema = {"type": "object", "properties": {}}
 
-    async def execute(self, arguments, context, on_progress=None):
+    async def execute(self, arguments, context):
         raise PluginError("simulated failure", retryable=True)
 
 
@@ -42,9 +42,12 @@ class ChainReaderPlugin(Plugin):
     name = "chain_reader"
     description = "reads a prior echo result"
     consumes = "echo"
-    input_schema = {"type": "object", "properties": {"source_call_id": {"type": "string"}}}
+    input_schema = {
+        "type": "object",
+        "properties": {"source_call_id": {"type": "string", "description": "tool_call_id of the prior echo call."}},
+    }
 
-    async def execute(self, arguments, context, on_progress=None):
+    async def execute(self, arguments, context):
         prior = context.prior_results.get(arguments["source_call_id"])
         return PluginResult(data={"saw_prior": prior}, llm_summary="chained successfully")
 
@@ -188,6 +191,114 @@ async def test_tool_chaining_across_separate_rounds(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_consuming_plugin_schema_shows_real_candidate_id_after_upstream_call(monkeypatch):
+    """The proactive counterpart to test_consumes_error_lists_real_candidate_ids:
+    once echo has actually run, the *next* round's tool schema for
+    chain_reader should already contain the real call id in its
+    source_call_id description -- not just the error message after a
+    failed guess. Found necessary from a live run where the model
+    fabricated the same wrong id twice even after being told the real one
+    in the error text.
+    """
+    _patch_registry(monkeypatch, [EchoPlugin(), ChainReaderPlugin()])
+    provider = ScriptedProvider(
+        [
+            AssistantTurn(text=None, tool_calls=[ToolCall(id="c1", name="echo", arguments={"value": "hi"})]),
+            AssistantTurn(text="done", tool_calls=[]),
+        ]
+    )
+    agent = AgentLoop(provider=provider, max_tool_retries=2)
+
+    await agent.run(history=[], user_message="echo hi", agent_conn=None)
+
+    # Round 1 (index 1) is the call made *after* echo (id "c1") succeeded.
+    _messages_sent, tools_offered = provider.calls[1]
+    chain_reader_schema = next(t for t in tools_offered if t.name == "chain_reader")
+    source_call_id_description = chain_reader_schema.input_schema["properties"]["source_call_id"]["description"]
+    assert "c1" in source_call_id_description
+    assert "REAL IDS AVAILABLE" in source_call_id_description
+
+
+@pytest.mark.asyncio
+async def test_consuming_plugin_schema_before_any_upstream_call_says_call_it_first(monkeypatch):
+    _patch_registry(monkeypatch, [EchoPlugin(), ChainReaderPlugin()])
+    provider = ScriptedProvider([AssistantTurn(text="ok", tool_calls=[])])
+    agent = AgentLoop(provider=provider, max_tool_retries=2)
+
+    await agent.run(history=[], user_message="hi", agent_conn=None)
+
+    _messages_sent, tools_offered = provider.calls[0]
+    chain_reader_schema = next(t for t in tools_offered if t.name == "chain_reader")
+    description = chain_reader_schema.input_schema["properties"]["source_call_id"]["description"]
+    assert "call 'echo' first" in description
+
+
+@pytest.mark.asyncio
+async def test_tool_schemas_do_not_mutate_shared_plugin_input_schema(monkeypatch):
+    """The dynamic hint must never leak back into the plugin's own
+    class-level input_schema dict -- that object is shared across every
+    request this AgentLoop instance ever handles (a real bug if mutated:
+    one user's real call id would silently appear in another's prompt).
+    """
+    plugin = ChainReaderPlugin()
+    original_description = plugin.input_schema["properties"]["source_call_id"]["description"]
+    _patch_registry(monkeypatch, [EchoPlugin(), plugin])
+    provider = ScriptedProvider(
+        [
+            AssistantTurn(text=None, tool_calls=[ToolCall(id="c1", name="echo", arguments={"value": "hi"})]),
+            AssistantTurn(text="done", tool_calls=[]),
+        ]
+    )
+    agent = AgentLoop(provider=provider, max_tool_retries=2)
+
+    await agent.run(history=[], user_message="echo hi", agent_conn=None)
+
+    assert plugin.input_schema["properties"]["source_call_id"]["description"] == original_description
+
+
+@pytest.mark.asyncio
+async def test_tool_chaining_across_separate_chat_turns(monkeypatch):
+    """Regression test for a real production bug: PluginContext was seeded
+    fresh (empty prior_results) on every AgentLoop.run() call, so a `chart`
+    request in a *later* /chat turn referencing a `query` call from an
+    *earlier* turn always failed validation -- "chart it" as a follow-up
+    message to an earlier query, the single most natural way a real user
+    actually chains tools, was silently broken regardless of what
+    tool_call_id the model used. This simulates exactly that: two separate
+    agent.run() calls, the second one's `history` argument populated from
+    the first call's own returned messages -- the same way ChatService
+    reloads persisted history for a new turn.
+    """
+    _patch_registry(monkeypatch, [EchoPlugin(), ChainReaderPlugin()])
+
+    first_provider = ScriptedProvider(
+        [
+            AssistantTurn(text=None, tool_calls=[ToolCall(id="c1", name="echo", arguments={"value": "turn-one"})]),
+            AssistantTurn(text="echoed", tool_calls=[]),
+        ]
+    )
+    first_agent = AgentLoop(provider=first_provider, max_tool_retries=2)
+    turn_one_messages = await first_agent.run(history=[], user_message="echo turn-one", agent_conn=None)
+
+    second_provider = ScriptedProvider(
+        [
+            AssistantTurn(
+                text=None, tool_calls=[ToolCall(id="c2", name="chain_reader", arguments={"source_call_id": "c1"})]
+            ),
+            AssistantTurn(text="done", tool_calls=[]),
+        ]
+    )
+    second_agent = AgentLoop(provider=second_provider, max_tool_retries=2)
+    turn_two_messages = await second_agent.run(
+        history=turn_one_messages, user_message="now chain it", agent_conn=None
+    )
+
+    tool_msgs = [m for m in turn_two_messages if m.role == "tool"]
+    assert tool_msgs[0].is_error is False
+    assert tool_msgs[0].data == {"saw_prior": {"echoed": "turn-one"}}
+
+
+@pytest.mark.asyncio
 async def test_consumes_missing_source_call_id_is_a_structured_error(monkeypatch):
     _patch_registry(monkeypatch, [EchoPlugin(), ChainReaderPlugin()])
     provider = ScriptedProvider(
@@ -226,13 +337,41 @@ async def test_consumes_missing_source_call_id_reference_is_a_structured_error(m
 
 
 @pytest.mark.asyncio
+async def test_consumes_error_lists_real_candidate_ids(monkeypatch):
+    """Regression test for a real production issue: the model repeated the
+    identical fabricated source_call_id ("query_1") on both retries rather
+    than trying something new, once seen in production logs. The error
+    message now lists the actual valid ids so a retry has something
+    concrete to copy instead of guessing again.
+    """
+    _patch_registry(monkeypatch, [EchoPlugin(), ChainReaderPlugin()])
+    provider = ScriptedProvider(
+        [
+            AssistantTurn(text=None, tool_calls=[ToolCall(id="c1", name="echo", arguments={"value": "hi"})]),
+            AssistantTurn(
+                text=None, tool_calls=[ToolCall(id="c2", name="chain_reader", arguments={"source_call_id": "made-up-id"})]
+            ),
+            AssistantTurn(text="gave up", tool_calls=[]),
+        ]
+    )
+    agent = AgentLoop(provider=provider, max_tool_retries=2)
+
+    new_messages = await agent.run(history=[], user_message="echo then chain with a bad id", agent_conn=None)
+
+    tool_msgs = [m for m in new_messages if m.role == "tool"]
+    assert tool_msgs[1].is_error is True
+    assert "c1" in tool_msgs[1].content
+    assert "Valid 'echo' call ids" in tool_msgs[1].content
+
+
+@pytest.mark.asyncio
 async def test_consumes_wrong_source_plugin_type_is_a_structured_error(monkeypatch):
     class OtherPlugin(Plugin):
         name = "other"
         description = "a plugin that isn't 'echo'"
         input_schema = {"type": "object", "properties": {}}
 
-        async def execute(self, arguments, context, on_progress=None):
+        async def execute(self, arguments, context):
             return PluginResult(data={"ok": True}, llm_summary="did something")
 
     _patch_registry(monkeypatch, [OtherPlugin(), ChainReaderPlugin()])
@@ -281,7 +420,7 @@ async def test_plugin_bug_unhandled_exception_does_not_crash_loop(monkeypatch):
         description = "raises a non-PluginError bug"
         input_schema = {"type": "object", "properties": {}}
 
-        async def execute(self, arguments, context, on_progress=None):
+        async def execute(self, arguments, context):
             raise RuntimeError("boom")
 
     _patch_registry(monkeypatch, [BuggyPlugin()])

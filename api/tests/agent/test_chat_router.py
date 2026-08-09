@@ -38,6 +38,30 @@ async def test_chat_happy_path_creates_session_and_answers(client):
     assert len(body["tool_calls"]) == 1
     assert body["tool_calls"][0]["name"] == "query"
     assert body["tool_calls"][0]["is_error"] is False
+    assert body["latency_ms"] >= 0
+    assert body["input_tokens"] == 0  # ScriptedProvider's turns didn't set usage
+    assert body["output_tokens"] == 0
+
+
+@pytest.mark.asyncio
+async def test_chat_response_sums_token_usage_across_rounds(client):
+    _use_provider(
+        [
+            AssistantTurn(
+                text=None,
+                tool_calls=[ToolCall(id="c1", name="query", arguments={"sql": "SELECT 1"})],
+                input_tokens=100,
+                output_tokens=20,
+            ),
+            AssistantTurn(text="done", tool_calls=[], input_tokens=150, output_tokens=30),
+        ]
+    )
+
+    resp = await client.post("/chat", json={"message": "how many servers?"})
+
+    body = resp.json()
+    assert body["input_tokens"] == 250
+    assert body["output_tokens"] == 50
 
 
 @pytest.mark.asyncio
@@ -141,3 +165,62 @@ async def test_chat_query_then_chart_chains_across_two_rounds(client):
     assert chart_call["result"]["chart_type"] == "bar"
     assert {row["server_id"] for row in chart_call["result"]["data"]} == {"srv_1", "srv_2"}
     assert "approximate_member_count" in chart_call["result"]["sql"]
+
+
+@pytest.mark.asyncio
+async def test_chat_query_then_chart_as_two_separate_http_turns(client):
+    """Exactly the real-world sequence that surfaced the cross-turn
+    chaining bug: 'how many users per server' as one /chat call, then 'now
+    chart it' as a *separate* later /chat call in the same session -- not
+    both in one message. Regression test at the HTTP layer, on top of the
+    loop-level one in test_loop.py.
+    """
+    _use_provider(
+        [
+            AssistantTurn(
+                text=None,
+                tool_calls=[
+                    ToolCall(
+                        id="c1",
+                        name="query",
+                        arguments={"sql": "SELECT server_id, approximate_member_count FROM servers ORDER BY server_id"},
+                    )
+                ],
+            ),
+            AssistantTurn(text="srv_1 has 100 members, srv_2 has 50.", tool_calls=[]),
+        ]
+    )
+    first = await client.post("/chat", json={"message": "how many users per server"})
+    assert first.status_code == 200
+    session_id = first.json()["session_id"]
+    real_query_call_id = first.json()["tool_calls"][0]["tool_call_id"]
+
+    _use_provider(
+        [
+            AssistantTurn(
+                text=None,
+                tool_calls=[
+                    ToolCall(
+                        id="c2",
+                        name="chart",
+                        arguments={
+                            "source_call_id": real_query_call_id,
+                            "chart_type": "bar",
+                            "title": "Members per server",
+                            "x_field": "server_id",
+                            "y_field": "approximate_member_count",
+                        },
+                    )
+                ],
+            ),
+            AssistantTurn(text="Here's your chart.", tool_calls=[]),
+        ]
+    )
+    second = await client.post("/chat", json={"session_id": session_id, "message": "now chart it"})
+
+    assert second.status_code == 200
+    body = second.json()
+    chart_call = body["tool_calls"][0]
+    assert chart_call["name"] == "chart"
+    assert chart_call["is_error"] is False
+    assert {row["server_id"] for row in chart_call["result"]["data"]} == {"srv_1", "srv_2"}

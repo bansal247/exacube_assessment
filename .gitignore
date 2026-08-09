@@ -2,3 +2,5 @@
 .env
 .claude
 *__pycache__/
+eval/results/*.json 
+!results_20260809T120401Z.json

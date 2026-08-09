@@ -1,9 +1,7 @@
-from collections.abc import AsyncIterator
-
 from anthropic import AsyncAnthropic
 
 from app.agent.messages import AssistantTurn, Message, ToolCall
-from app.agent.provider import LLMProvider, ProviderStreamEvent, TextDelta, ToolSchema, TurnComplete
+from app.agent.provider import LLMProvider, ToolSchema
 
 
 class AnthropicProvider(LLMProvider):
@@ -14,22 +12,7 @@ class AnthropicProvider(LLMProvider):
 
     async def generate(self, system: str, messages: list[Message], tools: list[ToolSchema]) -> AssistantTurn:
         response = await self._client.messages.create(**self._request_kwargs(system, messages, tools))
-        return self._to_assistant_turn(response.content)
-
-    async def generate_stream(
-        self, system: str, messages: list[Message], tools: list[ToolSchema]
-    ) -> AsyncIterator[ProviderStreamEvent]:
-        kwargs = self._request_kwargs(system, messages, tools)
-        async with self._client.messages.stream(**kwargs) as stream:
-            async for event in stream:
-                if event.type == "content_block_delta" and event.delta.type == "text_delta":
-                    yield TextDelta(text=event.delta.text)
-            # get_final_message() is Anthropic's own authoritative assembled
-            # result -- used instead of manually accumulating text/tool
-            # input deltas, so the terminal event can never drift from what
-            # streamed live.
-            final = await stream.get_final_message()
-        yield TurnComplete(turn=self._to_assistant_turn(final.content))
+        return self._to_assistant_turn(response.content, response.usage)
 
     def _request_kwargs(self, system: str, messages: list[Message], tools: list[ToolSchema]) -> dict:
         kwargs: dict = dict(
@@ -45,7 +28,7 @@ class AnthropicProvider(LLMProvider):
         return kwargs
 
     @staticmethod
-    def _to_assistant_turn(content_blocks) -> AssistantTurn:
+    def _to_assistant_turn(content_blocks, usage=None) -> AssistantTurn:
         text_parts: list[str] = []
         tool_calls: list[ToolCall] = []
         for block in content_blocks:
@@ -53,7 +36,12 @@ class AnthropicProvider(LLMProvider):
                 text_parts.append(block.text)
             elif block.type == "tool_use":
                 tool_calls.append(ToolCall(id=block.id, name=block.name, arguments=block.input))
-        return AssistantTurn(text="\n".join(text_parts) if text_parts else None, tool_calls=tool_calls)
+        return AssistantTurn(
+            text="\n".join(text_parts) if text_parts else None,
+            tool_calls=tool_calls,
+            input_tokens=getattr(usage, "input_tokens", None),
+            output_tokens=getattr(usage, "output_tokens", None),
+        )
 
     @staticmethod
     def _to_anthropic_messages(messages: list[Message]) -> list[dict]:

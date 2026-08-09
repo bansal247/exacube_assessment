@@ -140,10 +140,10 @@ async def test_pin_a_failed_call_is_400(client):
 
 @pytest.mark.asyncio
 async def test_list_pins_ordered_by_position(client):
-    session_id, chart_1 = await _chat_query_then_chart(client, title="First")
-    _, chart_2 = await _chat_query_then_chart(client, title="Second")
-    await client.post("/pins", json={"session_id": session_id, "tool_call_id": chart_1})
-    await client.post("/pins", json={"session_id": session_id, "tool_call_id": chart_2})
+    session_1, chart_1 = await _chat_query_then_chart(client, title="First")
+    session_2, chart_2 = await _chat_query_then_chart(client, title="Second")
+    await client.post("/pins", json={"session_id": session_1, "tool_call_id": chart_1})
+    await client.post("/pins", json={"session_id": session_2, "tool_call_id": chart_2})
 
     resp = await client.get("/pins")
     assert resp.status_code == 200

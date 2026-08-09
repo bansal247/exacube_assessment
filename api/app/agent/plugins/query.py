@@ -1,15 +1,18 @@
 import csv
 import io
 import json
+import logging
 
 import asyncpg
 
 from app.agent.jsonable import to_jsonable
-from app.agent.plugins.base import ArtifactFile, OnProgress, Plugin, PluginContext, PluginError, PluginResult
+from app.agent.plugins.base import ArtifactFile, Plugin, PluginContext, PluginError, PluginResult
 from app.agent.plugins.registry import register_plugin
 from app.agent.schema_context import SCHEMA_DESCRIPTION
 from app.agent.sql_safety import SqlValidationError, make_read_only_capped
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 # Baseline safety already in place regardless of the validation below: this
 # plugin only ever runs on context.agent_conn, which is always acquired
@@ -58,9 +61,7 @@ class QueryPlugin(Plugin):
         "required": ["sql"],
     }
 
-    async def execute(
-        self, arguments: dict, context: PluginContext, on_progress: OnProgress | None = None
-    ) -> PluginResult:
+    async def execute(self, arguments: dict, context: PluginContext) -> PluginResult:
         sql_text = arguments.get("sql")
         if not isinstance(sql_text, str) or not sql_text.strip():
             raise PluginError("'sql' argument is required and must be a non-empty string", retryable=True)
@@ -70,20 +71,21 @@ class QueryPlugin(Plugin):
         try:
             safe_sql = make_read_only_capped(sql_text, max_rows=settings.agent_row_cap)
         except SqlValidationError as exc:
+            logger.warning("sql rejected by validation", extra={"sql": sql_text, "reason": str(exc)})
             # retryable=True: this is exactly the case the loop's bounded
             # retry exists for -- the LLM sees why its SQL was rejected and
             # can produce a valid single-SELECT in response.
             raise PluginError(f"Query rejected: {exc}", retryable=True) from exc
 
-        if on_progress:
-            await on_progress("Running SQL query...")
-
+        logger.info("executing sql", extra={"sql": safe_sql})
         try:
             rows = await context.agent_conn.fetch(safe_sql)
         except asyncpg.PostgresError as exc:
+            logger.warning("sql execution failed", extra={"sql": safe_sql, "error": str(exc)})
             raise PluginError(f"SQL execution failed: {exc}", retryable=True) from exc
 
         data_rows = to_jsonable([dict(r) for r in rows])
+        logger.info("sql completed", extra={"row_count": len(data_rows)})
         return PluginResult(
             # `sql` is the validated, cap-applied query that actually ran --
             # not necessarily byte-identical to what the LLM wrote (e.g. a

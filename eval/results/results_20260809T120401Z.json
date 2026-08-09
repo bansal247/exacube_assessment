@@ -1,0 +1,361 @@
+{
+  "summary": {
+    "routing_score": 1.0,
+    "correctness_score": 1.0,
+    "questions_total": 17,
+    "questions_correctness_scored": 15,
+    "avg_latency_ms": 2578.004915996537,
+    "total_input_tokens": 51184,
+    "total_output_tokens": 2135,
+    "estimated_cost_usd": 0.185577
+  },
+  "results": [
+    {
+      "id": "simple_1",
+      "category": "simple_lookup",
+      "question": "How many servers are in this dataset in total?",
+      "expected_tools": [
+        "query"
+      ],
+      "actual_tools": [
+        "query"
+      ],
+      "routing_pass": true,
+      "correctness": "pass",
+      "reply": "There are 10 servers in this dataset.",
+      "latency_ms": 1937.6895650057122,
+      "input_tokens": 2484,
+      "output_tokens": 30,
+      "error": null,
+      "actual_sql": null,
+      "expected_rows": null,
+      "actual_rows": null
+    },
+    {
+      "id": "simple_2",
+      "category": "simple_lookup",
+      "question": "How many channels are there across all servers combined?",
+      "expected_tools": [
+        "query"
+      ],
+      "actual_tools": [
+        "query"
+      ],
+      "routing_pass": true,
+      "correctness": "pass",
+      "reply": "There are 62 channels across all servers combined.",
+      "latency_ms": 1697.9077769792639,
+      "input_tokens": 2484,
+      "output_tokens": 31,
+      "error": null,
+      "actual_sql": null,
+      "expected_rows": null,
+      "actual_rows": null
+    },
+    {
+      "id": "simple_3",
+      "category": "simple_lookup",
+      "question": "What region is the server with id 'server_001' in?",
+      "expected_tools": [
+        "query"
+      ],
+      "actual_tools": [
+        "query"
+      ],
+      "routing_pass": true,
+      "correctness": "pass",
+      "reply": "The server with id 'server_001' is in the region: us-east.",
+      "latency_ms": 1939.5634229877032,
+      "input_tokens": 2500,
+      "output_tokens": 45,
+      "error": null,
+      "actual_sql": null,
+      "expected_rows": null,
+      "actual_rows": null
+    },
+    {
+      "id": "timeseries_1",
+      "category": "time_series",
+      "question": "Across all servers, which single day had the most total messages sent?",
+      "expected_tools": [
+        "query"
+      ],
+      "actual_tools": [
+        "query"
+      ],
+      "routing_pass": true,
+      "correctness": "pass",
+      "reply": "The single day with the most total messages sent across all servers was 2026-03-08, with 3,608 messages.",
+      "latency_ms": 2383.633545017801,
+      "input_tokens": 2527,
+      "output_tokens": 68,
+      "error": null,
+      "actual_sql": null,
+      "expected_rows": null,
+      "actual_rows": null
+    },
+    {
+      "id": "timeseries_2",
+      "category": "time_series",
+      "question": "What is the average number of new members joining per day, across all servers?",
+      "expected_tools": [
+        "query"
+      ],
+      "actual_tools": [
+        "query"
+      ],
+      "routing_pass": true,
+      "correctness": "pass",
+      "reply": "The average number of new members joining per day across all servers is approximately 1.99.",
+      "latency_ms": 2334.148400987033,
+      "input_tokens": 2513,
+      "output_tokens": 49,
+      "error": null,
+      "actual_sql": null,
+      "expected_rows": null,
+      "actual_rows": null
+    },
+    {
+      "id": "timeseries_3",
+      "category": "time_series",
+      "question": "Compare average daily message volume on weekdays vs weekends.",
+      "expected_tools": [
+        "query"
+      ],
+      "actual_tools": [
+        "query"
+      ],
+      "routing_pass": true,
+      "correctness": "pass",
+      "reply": "On average, Discord servers in this dataset have about 216.6 messages per day on weekdays and about 262.9 messages per day on weekends. This shows that message activity is higher on weekends compared to weekdays.",
+      "latency_ms": 2351.1602630023845,
+      "input_tokens": 2534,
+      "output_tokens": 77,
+      "error": null,
+      "actual_sql": null,
+      "expected_rows": null,
+      "actual_rows": null
+    },
+    {
+      "id": "ambiguous_1",
+      "category": "ambiguous",
+      "question": "Which channels are dying?",
+      "expected_tools": [
+        "query"
+      ],
+      "actual_tools": [
+        "query"
+      ],
+      "routing_pass": true,
+      "correctness": "not_scored",
+      "reply": "It looks like there are no channels with a significant drop in average daily message count between the last 30 days and the previous 30 days\u2014at least not ones meeting these criteria in the available data.\n\nIf you would like a different definition of \"dying\" (such as channels that have dropped to zero messages recently, or a longer-term trend), let me know and I can try a different approach.",
+      "latency_ms": 6653.834920958616,
+      "input_tokens": 2724,
+      "output_tokens": 409,
+      "error": null,
+      "actual_sql": null,
+      "expected_rows": null,
+      "actual_rows": null
+    },
+    {
+      "id": "ambiguous_2",
+      "category": "ambiguous",
+      "question": "Who are the most engaged users?",
+      "expected_tools": [
+        "query"
+      ],
+      "actual_tools": [
+        "query"
+      ],
+      "routing_pass": true,
+      "correctness": "not_scored",
+      "reply": "The most engaged users, based on a combination of messages sent and time spent in voice channels, are:\n\n1. lking \u2014 4,907 messages sent, 3,357 voice minutes\n2. uhorton \u2014 4,550 messages sent, 2,478 voice minutes\n3. rbaker \u2014 2,911 messages sent, 3,176 voice minutes\n4. wilkinskevin \u2014 2,717 messages sent, 2,823 voice minutes\n5. smithsarah \u2014 2,625 messages sent, 2,576 voice minutes\n6. epatterson \u2014 2,665 messages sent, 1,968 voice minutes\n7. phyllis16 \u2014 2,372 messages sent, 2,283 voice minutes\n8. christopher31 \u2014 2,444 messages sent, 1,885 voice minutes\n9. brittneyblake \u2014 1,310 messages sent, 4,589 voice minutes\n10. randall28 \u2014 1,766 messages sent, 103 voice minutes\n\nThese users show high activity in both text and voice participation.",
+      "latency_ms": 3265.4419179889373,
+      "input_tokens": 2793,
+      "output_tokens": 274,
+      "error": null,
+      "actual_sql": null,
+      "expected_rows": null,
+      "actual_rows": null
+    },
+    {
+      "id": "chart_1",
+      "category": "chart",
+      "question": "Chart the total messages per day for server_001 from daily_stats.",
+      "expected_tools": [
+        "query",
+        "chart"
+      ],
+      "actual_tools": [
+        "query",
+        "chart"
+      ],
+      "routing_pass": true,
+      "correctness": "pass",
+      "reply": "Here is a line chart showing the total number of messages per day for server_001 over the last ~180 days. Each point on the chart represents the total messages sent on that day, based on daily_stats data. Let me know if you'd like any further breakdown or analysis!",
+      "latency_ms": 2994.056853989605,
+      "input_tokens": 5713,
+      "output_tokens": 151,
+      "error": null,
+      "actual_sql": null,
+      "expected_rows": null,
+      "actual_rows": null
+    },
+    {
+      "id": "chart_2",
+      "category": "chart",
+      "question": "Show me a bar chart of the top 5 servers by approximate member count.",
+      "expected_tools": [
+        "query",
+        "chart"
+      ],
+      "actual_tools": [
+        "query",
+        "chart"
+      ],
+      "routing_pass": true,
+      "correctness": "pass",
+      "reply": "Here is a bar chart showing the top 5 servers by their approximate member count. The chart displays each server's ID along the x-axis and the corresponding member count on the y-axis. If you need server names or more details, let me know!",
+      "latency_ms": 3416.472452983726,
+      "input_tokens": 4089,
+      "output_tokens": 149,
+      "error": null,
+      "actual_sql": null,
+      "expected_rows": null,
+      "actual_rows": null
+    },
+    {
+      "id": "file_1",
+      "category": "file",
+      "question": "Give me the full list of channels in server_001 so I can export it.",
+      "expected_tools": [
+        "query"
+      ],
+      "actual_tools": [
+        "query"
+      ],
+      "routing_pass": true,
+      "correctness": "pass",
+      "reply": "Here is the full list of channels in server_001, ready for export:\n\n1. channel_id: server_001_text_1\n   - server_id: server_001\n   - channel_name: Surface-general\n   - channel_type: text\n   - topic: Role movie win.\n   - nsfw: false\n   - rate_limit_per_user: 2\n   - position: 0\n\n2. channel_id: server_001_text_2\n   - server_id: server_001\n   - channel_name: Human\n   - channel_type: text\n   - topic: Need stop peace technology.\n   - nsfw: false\n   - rate_limit_per_user: 2\n   - position: 1\n\n3. channel_id: server_001_voice_1\n   - server_id: server_001\n   - channel_name: Participant Voice\n   - channel_type: voice\n   - topic: null\n   - nsfw: false\n   - rate_limit_per_user: 0\n   - position: 2\n\nLet me know if you need this in a different format!",
+      "latency_ms": 3474.458945041988,
+      "input_tokens": 2758,
+      "output_tokens": 283,
+      "error": null,
+      "actual_sql": null,
+      "expected_rows": null,
+      "actual_rows": null
+    },
+    {
+      "id": "file_2",
+      "category": "file",
+      "question": "Export the member list for server_002.",
+      "expected_tools": [
+        "query"
+      ],
+      "actual_tools": [
+        "query"
+      ],
+      "routing_pass": true,
+      "correctness": "pass",
+      "reply": "The member list for server_002 has been exported, containing the following fields for each member: user_id, server_id, username, display_name, discriminator, avatar_hash, is_bot, join_date, last_active, roles, messages_sent, voice_minutes, and is_owner.\n\nThere are 407 members in the result set. If you need the raw data as a file or a specific format, please specify your requirements!",
+      "latency_ms": 3368.4409399866126,
+      "input_tokens": 9293,
+      "output_tokens": 145,
+      "error": null,
+      "actual_sql": null,
+      "expected_rows": null,
+      "actual_rows": null
+    },
+    {
+      "id": "chain_1",
+      "category": "chain",
+      "question": "Look up total messages per channel in server_001, then chart it as a bar chart.",
+      "expected_tools": [
+        "query",
+        "chart"
+      ],
+      "actual_tools": [
+        "query",
+        "chart"
+      ],
+      "routing_pass": true,
+      "correctness": "pass",
+      "reply": "I found the total messages per channel in server_001 and have displayed them as a bar chart. The x-axis shows each channel's ID and the y-axis represents the total message count for that channel. If you want to see the specific numbers or need channel names instead of IDs, let me know!",
+      "latency_ms": 3310.376328008715,
+      "input_tokens": 4037,
+      "output_tokens": 184,
+      "error": null,
+      "actual_sql": null,
+      "expected_rows": null,
+      "actual_rows": null
+    },
+    {
+      "id": "unanswerable_1",
+      "category": "unanswerable",
+      "question": "What's the weather like in Tokyo today?",
+      "expected_tools": [],
+      "actual_tools": [],
+      "routing_pass": true,
+      "correctness": "pass",
+      "reply": "Sorry, I can't provide current weather information. My access is limited to analytics data about Discord servers, not real-time weather updates.",
+      "latency_ms": 883.1992449704558,
+      "input_tokens": 1183,
+      "output_tokens": 27,
+      "error": null,
+      "actual_sql": null,
+      "expected_rows": null,
+      "actual_rows": null
+    },
+    {
+      "id": "unanswerable_2",
+      "category": "unanswerable",
+      "question": "Delete all messages posted by the most active user.",
+      "expected_tools": [],
+      "actual_tools": [],
+      "routing_pass": true,
+      "correctness": "pass",
+      "reply": "I can't perform deletions or modifications on your Discord data\u2014I only have read-only access for analytics purposes. If you need to remove messages, you\u2019ll need to use moderation tools within Discord itself. Let me know if you\u2019d like to see data about the most active users or need guidance on finding their messages!",
+      "latency_ms": 1129.5451230253093,
+      "input_tokens": 1185,
+      "output_tokens": 63,
+      "error": null,
+      "actual_sql": null,
+      "expected_rows": null,
+      "actual_rows": null
+    },
+    {
+      "id": "unanswerable_3",
+      "category": "unanswerable",
+      "question": "What's your favorite color?",
+      "expected_tools": [],
+      "actual_tools": [],
+      "routing_pass": true,
+      "correctness": "pass",
+      "reply": "I don't have personal preferences or feelings, so I don't have a favorite color! But if you want to know what colors are most popular among Discord users in your dataset (for example, among role or profile colors), just let me know and I can help look up related data if available.",
+      "latency_ms": 1291.573085996788,
+      "input_tokens": 1180,
+      "output_tokens": 59,
+      "error": null,
+      "actual_sql": null,
+      "expected_rows": null,
+      "actual_rows": null
+    },
+    {
+      "id": "unanswerable_4",
+      "category": "unanswerable",
+      "question": "Send an email summary of server activity to the server owner.",
+      "expected_tools": [],
+      "actual_tools": [],
+      "routing_pass": true,
+      "correctness": "pass",
+      "reply": "I cannot send emails or take direct actions outside this chat interface. However, I can provide you with a summary of server activity that you can easily share or use as the basis for an email to the server owner. \n\nWould you like a summary for a specific server, or should I select one server for you? Also, would you like the summary to cover the last week, month, or a different time period? Let me know your preferences!",
+      "latency_ms": 1394.5807850104757,
+      "input_tokens": 1187,
+      "output_tokens": 91,
+      "error": null,
+      "actual_sql": null,
+      "expected_rows": null,
+      "actual_rows": null
+    }
+  ]
+}

@@ -20,3 +20,8 @@ class ChatResponse(BaseModel):
     session_id: UUID
     reply: str
     tool_calls: list[ToolCallTrace]
+    # Eval-section instrumentation ("log per-turn latency and token cost"):
+    # summed across every provider call this turn made.
+    latency_ms: float
+    input_tokens: int
+    output_tokens: int

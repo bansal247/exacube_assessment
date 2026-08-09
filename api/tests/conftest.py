@@ -16,7 +16,8 @@ from testcontainers.postgres import PostgresContainer
 ## under test) against whatever testcontainers actually started.
 os.environ.setdefault("DATABASE_URL", "postgresql://placeholder:placeholder@localhost/placeholder")
 os.environ.setdefault("AGENT_DATABASE_URL", "postgresql://placeholder:placeholder@localhost/placeholder")
-os.environ.setdefault("ANTHROPIC_API_KEY", "placeholder")
+os.environ.setdefault("LLM_PROVIDER", "openai")
+os.environ.setdefault("OPENAI_API_KEY", "placeholder")
 
 from app.agent.loop import AgentLoop
 from app.agent.plugins.registry import discover_plugins
