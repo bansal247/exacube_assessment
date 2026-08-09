@@ -67,38 +67,229 @@ first request.
 
 ## How to write a new plugin
 
-1. Create `api/app/agent/plugins/your_plugin.py`.
-2. Subclass `Plugin` (`plugins/base.py`) and set:
-   - `name`, `description`, `input_schema` — JSON Schema for the arguments the LLM must supply.
-   - `display_kind` — `"table"` (rows), `"chart"` (a chart spec), `"image"` (an actual picture),
-     or `"file"` (download-only, e.g. a workbook or deck).
-   - `consumes` (optional) — a `{argument_name: required_plugin_name}` map, one entry per
-     upstream plugin yours reads a prior result from. The common case is one upstream: use
-     `{SOURCE_CALL_ID_ARG: "query"}` and accept the id via that same argument name
-     (`"source_call_id"`) in your `input_schema`. A plugin combining more than one upstream (say,
-     a `pdf` needing both a `chart` and an `image`) declares more than one entry, each with its
-     own argument name — `{"chart_call_id": "chart", "image_call_id": "image"}`. The loop
-     validates every entry before your `execute()` runs, so you can trust all of them without
-     re-checking.
-3. Implement `async def execute(self, arguments, context) -> PluginResult`:
-   - Validate anything JSON Schema can't express; raise `PluginError(message, retryable=...)`.
-   - Need the database? Use `context.agent_conn` — never open your own connection or pool.
-   - Chaining from an upstream call? Read `context.prior_results[arguments[your_arg_name]]` for
-     each entry in `consumes`.
-   - Return `PluginResult(data=..., llm_summary=...)`. `data` is the full result — what gets
-     pinned, downloaded, or chained from. `llm_summary` is the shorter text actually sent back to
-     the model, and replayed to it on later turns.
-4. Optionally implement `async def to_file(self, data) -> ArtifactFile | None` if your result
-   should be downloadable (`ArtifactFile(filename, content_type, content: bytes)`).
-5. Decorate the class with `@register_plugin`. Discovery is a directory scan — nothing else to
-   wire up.
-6. Need a Python package your plugin uses that isn't already installed? Add it to
-   `api/requirements.txt` and rebuild (`docker compose up -d --build api`, or just `make up`,
-   which already rebuilds). This isn't a core-file edit in the sense that matters — it's
-   dependency management, not agent logic — see "What I'd do differently" for a more
-   self-contained alternative not built this pass.
+A plugin is a single class in a single file. Nothing outside that file needs to change —
+`loop.py`, `pins.py`, every router, and the system prompt are all plugin-agnostic. This section is
+meant to be the complete spec: everything below is either a required piece of the contract or a
+real behavior your plugin will hit once it's live, not something you need to go read source to
+discover.
 
-Nothing in `loop.py`, `pins.py`, any router, or the system prompt needs touching.
+### 1. Create the file
+
+`api/app/agent/plugins/your_plugin.py`. One plugin per file is the convention (not enforced), so
+it's obvious which file to edit later.
+
+### 2. Subclass `Plugin` (`api/app/agent/plugins/base.py`) and set five class attributes
+
+- **`name: str`** — the tool name the LLM calls. Must be unique across every registered plugin;
+  a duplicate raises `ValueError` at import time (app startup fails loudly, not a silent
+  overwrite). Use `snake_case`, matching `query`/`chart`.
+
+- **`description: str`** — sent to the LLM verbatim as the tool's description. This is the *only*
+  thing the model knows about your plugin beyond its `input_schema` — there's no separate
+  documentation channel. Say what it does, when to use it, and if it consumes another plugin,
+  say that explicitly (see `chart`'s own description for the pattern: it names which upstream
+  plugin it needs and which argument to put the id in). Vague descriptions produce wrong routing
+  — this is literally the prompt.
+
+- **`input_schema: dict`** — JSON Schema for the arguments the LLM must supply. Passed directly
+  to the provider as the tool's parameter schema, so it's enforced automatically — the LLM cannot
+  invoke your `execute()` with a missing `required` field or a value of the wrong JSON type. What
+  it can't express (cross-field rules like "`value_field` is required only when
+  `chart_type='histogram'`") is your job to check inside `execute()` — see step 4.
+
+- **`display_kind: Literal["table", "chart", "image", "file"]`** — no default, required. This
+  isn't just a label: it's what the frontend's `renderArtifact(display_kind, data)` (used for
+  both the live chat trace and the pinned dashboard) pattern-matches on to decide how to render
+  your `data`, and it determines the exact shape `data` must be:
+
+  | `display_kind` | Rendered as | Required shape of `PluginResult.data` |
+  |---|---|---|
+  | `"table"` | An HTML table | `{"rows": [{...}, ...], "sql": <str, optional>, "row_count": <int, optional>}`. `rows` is a list of flat JSON objects — one per row, same keys each. `sql`/`row_count` are shown as captions if present; only `rows` is required. See `query.py`. |
+  | `"chart"` | A Chart.js chart, client-rendered | `{"chart_type": "line"\|"bar"\|"histogram", "title": str, "x_field": str, "y_field": str, "data": [{...}, ...]}` for line/bar, or `{"chart_type": "histogram", "title": str, "value_field": str, "data": [...]}` for histogram. `data` is the row list to plot — `x_field`/`y_field` (or `value_field`) name the keys inside those rows to use as axes. See `chart.py`. |
+  | `"image"` | An `<img>` tag | `{"url": str}` **or** `{"base64": str}` (raw base64 PNG data, no `data:` prefix). No plugin implements this yet — the shape is contract surface only, kept honest here rather than guessed at. |
+  | `"file"` | Not rendered inline — a "pin it to download" note | No required shape. Only reachable as a real download if you also implement `to_file()` (step 5) *and* the result gets pinned — see that section for why. |
+
+  If your `data` doesn't match the shape your `display_kind` promises, nothing crashes — the
+  frontend falls back to a raw JSON dump — but the artifact won't render properly, so treat this
+  table as load-bearing, not a suggestion.
+
+- **`consumes: dict[str, str] | None`** (default `None`) — declares which prior plugin call(s)
+  yours reads from. `None` if your plugin never chains off another (like `query`). Otherwise a
+  `{argument_name: required_plugin_name}` map, one entry per upstream dependency:
+  - **Single upstream** (the common case): one entry, conventionally keyed by the importable
+    constant `SOURCE_CALL_ID_ARG` (`"source_call_id"`) from `plugins/base.py` — e.g.
+    `consumes = {SOURCE_CALL_ID_ARG: "query"}`. Your `input_schema` must declare a matching
+    `"source_call_id": {"type": "string", ...}` property, marked `required`.
+  - **Multiple upstreams** (a fan-in — e.g. a hypothetical `pdf` needing both a `chart` and an
+    `image`): one entry per upstream, each with its own argument name —
+    `consumes = {"chart_call_id": "chart", "image_call_id": "image"}` — and a matching property
+    for each in `input_schema`.
+  - What this buys you: the loop validates every entry — that the id you were given actually
+    refers to a completed call, and that it's a call to the plugin you declared — *before*
+    `execute()` ever runs. Inside `execute()`, you can read straight from `context.prior_results`
+    without re-checking. The loop also proactively rewrites your schema's property descriptions
+    each round to include the real candidate ids currently available, so the model sees valid ids
+    before it guesses, not just after a failed attempt.
+  - What this doesn't do: express arbitrary data flow, only which *tool calls* must precede
+    yours. You still read each upstream's actual result out of `context.prior_results[id]`
+    yourself inside `execute()`.
+
+### 3. Optional: give it a pin title
+
+If your `input_schema` includes a string argument named `title`, its value becomes the pin's
+display title when a result of this plugin gets pinned (`services/pins.py`'s `_derive_title`
+reads it directly off the arguments of the pinned call). No `title` argument, or an empty one,
+falls back to `"{your plugin name} result"`. `chart` uses this; `query` doesn't bother, since a
+bare query has no natural title of its own.
+
+### 4. Implement `async def execute(self, arguments: dict, context: PluginContext) -> PluginResult`
+
+- `arguments` has already passed JSON Schema validation (required fields present, right JSON
+  types) — you only need to check things Schema can't express.
+- `context.agent_conn` is a ready-to-use `asyncpg.Connection`, already scoped to the
+  least-privilege `AGENT_DB_USER` role (read-only on the analytics tables). Use it directly if you
+  need the database — never open your own connection or pool; there's exactly one DI path for DB
+  access in this app, and reusing it is how your plugin stays trivially testable (a test just
+  passes in whatever connection it already has open).
+- `context.prior_results[call_id]` and `context.prior_call_names[call_id]` hold every completed
+  call's data/plugin-name for this session (this turn *and* earlier turns — chaining works across
+  separate `/chat` messages, not just within one). If your plugin declares `consumes`, the loop
+  already validated your reference before calling you; read it with
+  `context.prior_results[arguments[your_arg_name]]`.
+- **Validation failures you expect** (bad input, a value that doesn't fit): raise
+  `PluginError(message, retryable=True)`. `message` goes straight back to the LLM as the tool
+  result — write it the way `chart.py` does, naming what was wrong *and* what the valid options
+  actually are (e.g. "column 'x' isn't in the query result. Available columns: [...]"), so a retry
+  has something concrete to fix, not just a re-guess. Use `retryable=False` only if no retry could
+  possibly help (e.g. there's no DB connection in this context at all).
+- **Bugs, not expected failures**: don't try to catch everything. An uncaught exception is caught
+  one level up by the loop itself, logged with a full traceback, and turned into a generic "internal
+  error running '{name}'" tool result — it can't crash the turn, but it also isn't retryable
+  (the model has no way to fix a bug in your code), so only rely on this path for genuinely
+  unexpected failures, not routine validation.
+- **Untrusted content**: if your `llm_summary` includes user-authored Discord content (message
+  text, usernames — anything that isn't data your own code generated), wrap it the way
+  `query.py` does, in the *exact* markers it defines
+  (`UNTRUSTED_DATA_START`/`UNTRUSTED_DATA_END`, importable from `app.agent.plugins.query`) — the
+  system prompt's prompt-injection defense is keyed to that literal string, not a general concept
+  of "untrusted data." A different marker string is invisible to it. If your plugin's data is
+  never user-authored (like `chart`, which only ever handles numbers and column names it was
+  given), this doesn't apply.
+- Return `PluginResult(data=..., llm_summary=...)`:
+  - `data` — the full result. This is what's pinned, downloaded, and what a downstream consuming
+    plugin reads via `context.prior_results`. Must be JSON-serializable — persistence
+    (`json.dumps(..., default=str)`) won't crash on a stray `Decimal`/`datetime`/`UUID`, but will
+    silently stringify it via `repr`-like fallback, which is worse than doing it properly. Prefer
+    `to_jsonable()` (`app.agent.jsonable`) the way `query.py` does, which converts `datetime`/`date`
+    to ISO strings and `Decimal` to `float` explicitly.
+  - `llm_summary` — the shorter text actually sent to the model, and replayed to it on every later
+    turn of a long conversation. Deliberately separate from `data` so a large result (a chart's
+    full row set, say) doesn't cost tokens on every subsequent turn. Cap what you include (see
+    `query.py`'s `LLM_PREVIEW_ROW_LIMIT`) rather than dumping everything.
+
+### 5. Optional: `async def to_file(self, data: Any) -> ArtifactFile | None`
+
+Default implementation returns `None` — "not downloadable via the backend at all." Override it
+only if your result has a meaningful export format (`query` → CSV; a future `excel`/`powerpoint`
+plugin → its own primary output). Return `ArtifactFile(filename: str, content_type: str, content:
+bytes)`.
+
+Important: **this is only ever reached through a pin.** `GET /pins/{id}/download` is the one route
+that calls it — a live, unpinned chat result has no direct download endpoint of its own. If you
+want your plugin's result to be downloadable, the user has to pin it first; there's no separate
+"download this chat message" action.
+
+### 6. Register it
+
+Decorate the class with `@register_plugin` (`from app.agent.plugins.registry import
+register_plugin`). Discovery is a directory scan (`discover_plugins()`, called once at API
+startup) that imports every module in `plugins/` except `base.py`/`registry.py` — the decorator
+running at import time does the actual registration. Nothing else needs to call anything.
+
+One consequence worth knowing: `register_plugin` instantiates your class immediately
+(`cls()`) and that **one instance is reused for every request, for the lifetime of the process** —
+concurrent requests from different users share it. Don't store per-request state on `self`; use
+`context` (a fresh `PluginContext` per turn) for anything request-scoped. `input_schema` and
+friends are class-level constants precisely so this sharing is safe by construction — don't be the
+plugin that adds a mutable instance attribute and breaks that.
+
+### 7. New Python dependency?
+
+Add it to `api/requirements.txt` and rebuild (`docker compose up -d --build api`, or just
+`make up`, which already rebuilds). This isn't a core-file edit in the sense that matters — it's
+dependency management, not agent logic — see "What I'd do differently" for a more self-contained
+per-plugin-dependency alternative not built this pass.
+
+### 8. Testing
+
+This project's convention is **no dedicated per-plugin test file** — plugin behavior is exercised
+through the loop/router/pin integration tests instead (`tests/agent/test_loop.py`,
+`test_chat_router.py`, `test_pins.py`), which already cover the contract mechanics (`consumes`
+validation, chaining, error handling) generically, plugin-agnostically. A new plugin doesn't need
+its own test file to be considered tested; it needs the existing integration tests to keep passing
+with it registered, plus whatever scenario-specific coverage you think the integration suite is
+missing.
+
+### A complete worked example
+
+A plugin that consumes a prior `query` call and produces a downloadable plain-text digest —
+exercises `consumes`, the `title` convention, `PluginError`, and `to_file()` in one place:
+
+```python
+# api/app/agent/plugins/digest.py
+from app.agent.plugins.base import (
+    ArtifactFile,
+    Plugin,
+    PluginContext,
+    PluginError,
+    PluginResult,
+    SOURCE_CALL_ID_ARG,
+)
+from app.agent.plugins.registry import register_plugin
+
+
+@register_plugin
+class DigestPlugin(Plugin):
+    name = "digest"
+    description = (
+        "Turn the rows from a prior `query` call into a short plain-text digest, one line per "
+        f"row, downloadable as a .txt file. Requires '{SOURCE_CALL_ID_ARG}' set to the "
+        "tool_call_id of the `query` call to summarize."
+    )
+    consumes = {SOURCE_CALL_ID_ARG: "query"}
+    display_kind = "file"
+    input_schema = {
+        "type": "object",
+        "properties": {
+            SOURCE_CALL_ID_ARG: {"type": "string", "description": "tool_call_id of the prior `query` call."},
+            "title": {"type": "string", "description": "Short title for this digest."},
+        },
+        "required": [SOURCE_CALL_ID_ARG, "title"],
+    }
+
+    async def execute(self, arguments: dict, context: PluginContext) -> PluginResult:
+        title = arguments.get("title")
+        if not isinstance(title, str) or not title.strip():
+            raise PluginError("'title' is required", retryable=True)
+
+        source_data = context.prior_results[arguments[SOURCE_CALL_ID_ARG]]
+        rows = source_data.get("rows", [])
+        if not rows:
+            raise PluginError("The query this digest is based on returned no rows.", retryable=True)
+
+        lines = [", ".join(f"{k}={v}" for k, v in row.items()) for row in rows]
+        return PluginResult(
+            data={"title": title, "lines": lines},
+            llm_summary=f"Built a {len(lines)}-line digest titled '{title}'.",
+        )
+
+    async def to_file(self, data) -> ArtifactFile | None:
+        content = "\n".join(data["lines"])
+        return ArtifactFile(filename="digest.txt", content_type="text/plain", content=content.encode("utf-8"))
+```
+
+That's the whole plugin. Drop the file in, restart the API, and it's callable, chainable,
+pinnable, and downloadable — no other file touched.
 
 ```
 db/          schema.sql + load.py (idempotent CSV -> Postgres loader, role setup)
