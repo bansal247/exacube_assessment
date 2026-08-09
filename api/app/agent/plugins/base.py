@@ -12,12 +12,18 @@ What the interface owes the system, and how each is handled:
   plugin-specific logic.
 - Structured errors: PluginError, with `retryable` so the loop can
   distinguish "the LLM should try a fixed call" from "no retry helps."
-- Chaining -- consuming another plugin's output: `consumes` declares which
-  plugin (by name) this one expects to read from, and every consuming
-  plugin's input_schema must accept the result via the fixed argument name
-  SOURCE_CALL_ID_ARG. The loop (not each plugin) validates that the
-  referenced call actually happened and actually was of the declared kind
-  before calling execute() -- one enforcement point, not one per plugin.
+- Chaining -- consuming one or more other plugins' output: `consumes` maps
+  each argument name this plugin reads an upstream tool_call_id from to
+  the plugin name it expects that call to be (e.g. a single-parent plugin
+  like `chart` uses `{SOURCE_CALL_ID_ARG: "query"}`; a fan-in plugin like a
+  hypothetical `pdf` combining a chart and an image could use
+  `{"chart_call_id": "chart", "image_call_id": "image"}`). The loop (not
+  each plugin) validates every entry -- that the referenced call happened
+  and was of the declared kind -- before calling execute(), one
+  enforcement point instead of one per plugin. This only expresses a DAG
+  of *tool calls*, not arbitrary data flow -- a consuming plugin still
+  reads each upstream result out of `PluginContext.prior_results` by id
+  inside its own `execute()`, same as ever.
 - Artifacts -- pinning and downloading: `display_kind` declares how a
   result should render on a dashboard ("table" | "chart" | "image" | "file").
   "table"/"chart"/"image" preview inline; "file" is download-only. "chart"
@@ -45,9 +51,10 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal
 if TYPE_CHECKING:
     import asyncpg
 
-# Fixed argument name a consuming plugin's input_schema must use for the
-# upstream call it reads from -- one convention, not a per-plugin field
-# name, so the loop can validate it generically.
+# Conventional argument name for a plugin with exactly one upstream
+# dependency -- not enforced by the loop (which reads whatever keys
+# Plugin.consumes declares), just the expected name to use in that common
+# case so single-parent plugins don't each invent their own.
 SOURCE_CALL_ID_ARG = "source_call_id"
 
 DisplayKind = Literal["table", "chart", "image", "file"]
@@ -117,10 +124,12 @@ class Plugin(ABC):
     # as the provider's tool `input_schema` (Anthropic's tool format already
     # *is* name/description/input_schema, so no translation needed there).
     input_schema: ClassVar[dict]
-    # None if this plugin doesn't consume another's output. Otherwise the
-    # name of the plugin it expects SOURCE_CALL_ID_ARG to reference -- e.g.
-    # chart.consumes = "query".
-    consumes: ClassVar[str | None] = None
+    # None if this plugin doesn't consume any other plugin's output.
+    # Otherwise a {argument_name: required_plugin_name} map -- one entry
+    # per upstream dependency. A single-parent plugin (the common case)
+    # has exactly one entry, conventionally keyed by SOURCE_CALL_ID_ARG --
+    # e.g. chart.consumes = {SOURCE_CALL_ID_ARG: "query"}.
+    consumes: ClassVar[dict[str, str] | None] = None
     # How this plugin's result should render on a dashboard/pin tile.
     # "table"/"chart"/"image" preview inline; "file" is download-only.
     display_kind: ClassVar[DisplayKind]

@@ -72,14 +72,19 @@ first request.
    - `name`, `description`, `input_schema` — JSON Schema for the arguments the LLM must supply.
    - `display_kind` — `"table"` (rows), `"chart"` (a chart spec), `"image"` (an actual picture),
      or `"file"` (download-only, e.g. a workbook or deck).
-   - `consumes` (optional) — the name of the plugin yours reads a prior result from. If set,
-     your `input_schema` must accept the upstream call's id via the argument name
-     `SOURCE_CALL_ID_ARG` (`"source_call_id"`). The loop validates that reference before your
-     `execute()` runs, so you can trust it's correct without re-checking.
+   - `consumes` (optional) — a `{argument_name: required_plugin_name}` map, one entry per
+     upstream plugin yours reads a prior result from. The common case is one upstream: use
+     `{SOURCE_CALL_ID_ARG: "query"}` and accept the id via that same argument name
+     (`"source_call_id"`) in your `input_schema`. A plugin combining more than one upstream (say,
+     a `pdf` needing both a `chart` and an `image`) declares more than one entry, each with its
+     own argument name — `{"chart_call_id": "chart", "image_call_id": "image"}`. The loop
+     validates every entry before your `execute()` runs, so you can trust all of them without
+     re-checking.
 3. Implement `async def execute(self, arguments, context) -> PluginResult`:
    - Validate anything JSON Schema can't express; raise `PluginError(message, retryable=...)`.
    - Need the database? Use `context.agent_conn` — never open your own connection or pool.
-   - Chaining from an upstream call? Read `context.prior_results[arguments["source_call_id"]]`.
+   - Chaining from an upstream call? Read `context.prior_results[arguments[your_arg_name]]` for
+     each entry in `consumes`.
    - Return `PluginResult(data=..., llm_summary=...)`. `data` is the full result — what gets
      pinned, downloaded, or chained from. `llm_summary` is the shorter text actually sent back to
      the model, and replayed to it on later turns.
@@ -167,6 +172,22 @@ the more complete of the two — kept both rather than relying on either alone.
 **Downloads render on demand; nothing is persisted server-side.** `GET /pins/{id}/download` calls
 the producing plugin's `to_file()` fresh on every request. No temp files, no storage location, no
 cleanup job to write — the lifecycle story is that there isn't one.
+
+**`consumes` is a `{argument_name: plugin_name}` map, not a single plugin name — chaining is a
+DAG, not just a line.** Started as `consumes: str | None`, one upstream dependency per plugin,
+which is all `chart` (consumes `query`) ever needed. That shape can't express a plugin needing
+two or more upstream results at once — a `pdf` combining a `chart` and an `image`, say — without
+either picking one arbitrarily or bolting on a second, differently-named mechanism next to the
+first. Generalized `consumes` to a map instead: each entry is validated independently (all
+reported together in one error if more than one is wrong, not one round-trip per bad argument),
+and `replay.py`'s `build_chain` walks the real dependency graph via DFS instead of following one
+`source_call_id` backward — a step reachable through more than one path (two plugins sharing the
+same upstream query) still appears exactly once, in a valid execution order. Cost: `_validate_consumes`
+and the schema-hint injection in `loop.py` both iterate a dict now instead of handling one fixed
+field; `chart` itself needed one line changed (`consumes = {SOURCE_CALL_ID_ARG: "query"}`) to fit
+the new shape. No plugin actually needing more than one upstream exists yet — this is contract
+surface built ahead of a plugin that uses it, the same way `display_kind: "image"` was added
+before any plugin returns one.
 
 **Streaming was built, then cut.** An SSE `POST /chat/stream` endpoint existed alongside `/chat`
 and worked for the happy path. It was cut before completion to keep time for correctness and

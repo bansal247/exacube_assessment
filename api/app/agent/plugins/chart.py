@@ -25,7 +25,7 @@ class ChartPlugin(Plugin):
         "'histogram' for a distribution of one numeric field. "
         f"Requires '{SOURCE_CALL_ID_ARG}' set to the tool_call_id of the `query` call whose rows to chart."
     )
-    consumes = "query"
+    consumes = {SOURCE_CALL_ID_ARG: "query"}
     display_kind = "chart"
     # No to_file() override -- deliberately. Live/pinned display stays
     # spec-based (the frontend renders it); if a user wants an image file,

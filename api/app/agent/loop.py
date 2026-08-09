@@ -21,7 +21,7 @@ import logging
 import asyncpg
 
 from app.agent.messages import Message, ToolCall
-from app.agent.plugins.base import SOURCE_CALL_ID_ARG, Plugin, PluginContext, PluginError
+from app.agent.plugins.base import Plugin, PluginContext, PluginError
 from app.agent.plugins.registry import all_plugins, get_plugin
 from app.agent.prompts import SYSTEM_PROMPT
 from app.agent.provider import LLMProvider, ToolSchema
@@ -142,14 +142,15 @@ class AgentLoop:
             logger.warning("unknown tool requested", extra={"tool_call_id": call.id, "tool_name": call.name})
             return self._error_message(call, f"Unknown tool '{call.name}'")
 
-        if plugin.consumes is not None:
-            error = self._validate_consumes(call, plugin, context)
-            if error is not None:
+        if plugin.consumes:
+            errors = self._validate_consumes(call, plugin, context)
+            if errors:
+                message = " ".join(errors)
                 logger.warning(
                     "consumes validation failed",
-                    extra={"tool_call_id": call.id, "tool_name": call.name, "reason": error},
+                    extra={"tool_call_id": call.id, "tool_name": call.name, "reason": message},
                 )
-                return self._error_message(call, error)
+                return self._error_message(call, message)
 
         try:
             result = await plugin.execute(call.arguments, context)
@@ -178,30 +179,41 @@ class AgentLoop:
         )
 
     @staticmethod
-    def _validate_consumes(call: ToolCall, plugin: Plugin, context: PluginContext) -> str | None:
-        # Lists the *real* candidate ids in the error text -- found via a
-        # live run where the model repeated the identical fabricated id
-        # ("query_1") on both retries rather than trying something new.
-        # Telling it what's valid, not just that it was wrong, gives a
-        # retry a concrete string to copy instead of another guess.
-        candidates = [cid for cid, name in context.prior_call_names.items() if name == plugin.consumes]
-        hint = f" Valid '{plugin.consumes}' call ids this turn: {candidates}." if candidates else ""
+    def _validate_consumes(call: ToolCall, plugin: Plugin, context: PluginContext) -> list[str]:
+        """Checks every (argument_name, required_plugin_name) pair in
+        plugin.consumes -- a fan-in plugin with two upstream dependencies
+        gets both checked and, if both are wrong, both reported in one
+        error rather than one round-trip per bad argument.
+        """
+        assert plugin.consumes is not None
+        errors = []
+        for arg_name, required_plugin in plugin.consumes.items():
+            # Lists the *real* candidate ids in the error text -- found via
+            # a live run where the model repeated the identical fabricated
+            # id ("query_1") on both retries rather than trying something
+            # new. Telling it what's valid, not just that it was wrong,
+            # gives a retry a concrete string to copy instead of another guess.
+            candidates = [cid for cid, name in context.prior_call_names.items() if name == required_plugin]
+            hint = f" Valid '{required_plugin}' call ids this turn: {candidates}." if candidates else ""
 
-        source_call_id = call.arguments.get(SOURCE_CALL_ID_ARG)
-        if not source_call_id:
-            return (
-                f"'{plugin.name}' requires a '{SOURCE_CALL_ID_ARG}' argument referencing a prior "
-                f"'{plugin.consumes}' call.{hint}"
-            )
-        if source_call_id not in context.prior_results:
-            return f"'{SOURCE_CALL_ID_ARG}' \"{source_call_id}\" does not refer to a completed call in this turn.{hint}"
-        actual_source = context.prior_call_names.get(source_call_id)
-        if actual_source != plugin.consumes:
-            return (
-                f"'{SOURCE_CALL_ID_ARG}' \"{source_call_id}\" refers to a '{actual_source}' call, "
-                f"but '{plugin.name}' requires a '{plugin.consumes}' call.{hint}"
-            )
-        return None
+            source_call_id = call.arguments.get(arg_name)
+            if not source_call_id:
+                errors.append(
+                    f"'{plugin.name}' requires a '{arg_name}' argument referencing a prior "
+                    f"'{required_plugin}' call.{hint}"
+                )
+            elif source_call_id not in context.prior_results:
+                errors.append(
+                    f"'{arg_name}' \"{source_call_id}\" does not refer to a completed call in this turn.{hint}"
+                )
+            else:
+                actual_source = context.prior_call_names.get(source_call_id)
+                if actual_source != required_plugin:
+                    errors.append(
+                        f"'{arg_name}' \"{source_call_id}\" refers to a '{actual_source}' call, "
+                        f"but '{plugin.name}' requires a '{required_plugin}' call.{hint}"
+                    )
+        return errors
 
     @staticmethod
     def _error_message(call: ToolCall, message: str) -> Message:
@@ -217,43 +229,48 @@ class AgentLoop:
     @staticmethod
     def _tool_schemas(context: PluginContext) -> list[ToolSchema]:
         """Builds each round, not once per turn -- a plugin that `consumes`
-        another's output gets the *actual* current candidate ids spliced
-        into its source_call_id property description, not just a generic
-        "provide an id" hint. This is the proactive counterpart to
-        _validate_consumes's reactive error message: found from a live run
-        where the model repeated the identical fabricated id twice even
-        after the error message named the real one -- showing it the real
-        id *before* it guesses, not just after, is the more complete fix.
+        one or more other plugins' output gets the *actual* current
+        candidate ids spliced into each of those argument's descriptions,
+        not just a generic "provide an id" hint. This is the proactive
+        counterpart to _validate_consumes's reactive error message: found
+        from a live run where the model repeated the identical fabricated
+        id twice even after the error message named the real one --
+        showing it the real id *before* it guesses, not just after, is the
+        more complete fix.
         """
         schemas = []
         for p in all_plugins():
             input_schema = p.input_schema
-            if p.consumes is not None:
-                input_schema = AgentLoop._with_source_call_id_hint(input_schema, p.consumes, context)
+            if p.consumes:
+                input_schema = AgentLoop._with_consumes_hints(input_schema, p.consumes, context)
             schemas.append(ToolSchema(name=p.name, description=p.description, input_schema=input_schema))
         return schemas
 
     @staticmethod
-    def _with_source_call_id_hint(input_schema: dict, consumes: str, context: PluginContext) -> dict:
-        candidates = [cid for cid, name in context.prior_call_names.items() if name == consumes]
-        if candidates:
-            hint = (
-                f" REAL IDS AVAILABLE RIGHT NOW: {candidates}. You MUST copy one of these exact "
-                f"strings -- never invent a new id such as 'query_1'."
-            )
-        else:
-            hint = f" No '{consumes}' call has completed yet this turn -- call '{consumes}' first, then use its real id here."
-
+    def _with_consumes_hints(input_schema: dict, consumes: dict[str, str], context: PluginContext) -> dict:
         # Never mutate `input_schema` in place -- it's the plugin's own
         # class-level dict, shared across every request this long-lived
         # AgentLoop instance ever handles. Build fresh copies of exactly
-        # the two levels being changed (the schema dict and the properties
-        # dict), leave everything else (including nested dicts we don't
-        # touch) referencing the original, shared objects.
+        # the levels being changed (the schema dict and the properties
+        # dict, plus one property dict per consumed argument), leave
+        # everything else (including nested dicts we don't touch)
+        # referencing the original, shared objects.
         properties = {**input_schema.get("properties", {})}
-        source_prop = properties.get(SOURCE_CALL_ID_ARG)
-        if source_prop is not None:
-            properties[SOURCE_CALL_ID_ARG] = {**source_prop, "description": source_prop.get("description", "") + hint}
+        for arg_name, required_plugin in consumes.items():
+            candidates = [cid for cid, name in context.prior_call_names.items() if name == required_plugin]
+            if candidates:
+                hint = (
+                    f" REAL IDS AVAILABLE RIGHT NOW: {candidates}. You MUST copy one of these exact "
+                    f"strings -- never invent a new id such as 'query_1'."
+                )
+            else:
+                hint = (
+                    f" No '{required_plugin}' call has completed yet this turn -- call '{required_plugin}' "
+                    f"first, then use its real id here."
+                )
+            prop = properties.get(arg_name)
+            if prop is not None:
+                properties[arg_name] = {**prop, "description": prop.get("description", "") + hint}
         return {**input_schema, "properties": properties}
 
     @staticmethod

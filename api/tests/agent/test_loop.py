@@ -10,7 +10,7 @@ import pytest
 from app.agent import loop as loop_module
 from app.agent.loop import AgentLoop
 from app.agent.messages import AssistantTurn, Message, ToolCall
-from app.agent.plugins.base import Plugin, PluginError, PluginResult
+from app.agent.plugins.base import SOURCE_CALL_ID_ARG, Plugin, PluginError, PluginResult
 
 from tests.agent.fakes import ScriptedProvider
 
@@ -41,7 +41,7 @@ class ChainReaderPlugin(Plugin):
 
     name = "chain_reader"
     description = "reads a prior echo result"
-    consumes = "echo"
+    consumes = {SOURCE_CALL_ID_ARG: "echo"}
     input_schema = {
         "type": "object",
         "properties": {"source_call_id": {"type": "string", "description": "tool_call_id of the prior echo call."}},
@@ -50,6 +50,39 @@ class ChainReaderPlugin(Plugin):
     async def execute(self, arguments, context):
         prior = context.prior_results.get(arguments["source_call_id"])
         return PluginResult(data={"saw_prior": prior}, llm_summary="chained successfully")
+
+
+class ShoutPlugin(Plugin):
+    name = "shout"
+    description = "shouts its input back"
+    input_schema = {"type": "object", "properties": {"value": {"type": "string"}}}
+
+    async def execute(self, arguments, context):
+        return PluginResult(data={"shouted": arguments.get("value")}, llm_summary=f"shouted {arguments.get('value')!r}")
+
+
+class CombinerPlugin(Plugin):
+    """Fan-in: consumes both a prior 'echo' call and a prior 'shout' call
+    at once -- exercises Plugin.consumes as a genuine multi-entry
+    {argument_name: plugin_name} map, not just the single-parent case
+    every other fixture in this file uses.
+    """
+
+    name = "combiner"
+    description = "combines a prior echo and a prior shout result"
+    consumes = {"echo_call_id": "echo", "shout_call_id": "shout"}
+    input_schema = {
+        "type": "object",
+        "properties": {
+            "echo_call_id": {"type": "string", "description": "tool_call_id of the prior echo call."},
+            "shout_call_id": {"type": "string", "description": "tool_call_id of the prior shout call."},
+        },
+    }
+
+    async def execute(self, arguments, context):
+        echo = context.prior_results.get(arguments["echo_call_id"])
+        shout = context.prior_results.get(arguments["shout_call_id"])
+        return PluginResult(data={"echo": echo, "shout": shout}, llm_summary="combined successfully")
 
 
 def _patch_registry(monkeypatch, plugins: list[Plugin]):
@@ -377,8 +410,8 @@ async def test_consumes_wrong_source_plugin_type_is_a_structured_error(monkeypat
     _patch_registry(monkeypatch, [OtherPlugin(), ChainReaderPlugin()])
     provider = ScriptedProvider(
         [
-            # chain_reader declares consumes="echo", but c1 here is 'other'
-            # -- succeeds, just isn't the right kind of call.
+            # chain_reader declares consumes={"source_call_id": "echo"}, but
+            # c1 here is 'other' -- succeeds, just isn't the right kind of call.
             AssistantTurn(text=None, tool_calls=[ToolCall(id="c1", name="other", arguments={})]),
             AssistantTurn(
                 text=None, tool_calls=[ToolCall(id="c2", name="chain_reader", arguments={"source_call_id": "c1"})]
@@ -452,3 +485,60 @@ async def test_history_is_passed_through_and_new_user_message_appended(monkeypat
     assert sent_messages[0].content == "first"
     assert sent_messages[-1].content == "second"
     assert new_messages[0] == Message(role="user", content="second")
+
+
+@pytest.mark.asyncio
+async def test_fan_in_consumes_succeeds_with_both_upstream_calls(monkeypatch):
+    """A plugin can consume more than one upstream plugin at once --
+    combiner needs both a prior echo and a prior shout call, referenced by
+    two separate arguments, not the single source_call_id every other
+    fixture here uses.
+    """
+    _patch_registry(monkeypatch, [EchoPlugin(), ShoutPlugin(), CombinerPlugin()])
+    provider = ScriptedProvider(
+        [
+            AssistantTurn(
+                text=None,
+                tool_calls=[
+                    ToolCall(id="c1", name="echo", arguments={"value": "hi"}),
+                    ToolCall(id="c2", name="shout", arguments={"value": "HI"}),
+                ],
+            ),
+            AssistantTurn(
+                text=None,
+                tool_calls=[ToolCall(id="c3", name="combiner", arguments={"echo_call_id": "c1", "shout_call_id": "c2"})],
+            ),
+            AssistantTurn(text="done", tool_calls=[]),
+        ]
+    )
+    agent = AgentLoop(provider=provider, max_tool_retries=2)
+
+    new_messages = await agent.run(history=[], user_message="echo and shout, then combine", agent_conn=None)
+
+    tool_msgs = [m for m in new_messages if m.role == "tool"]
+    combiner_msg = next(m for m in tool_msgs if m.tool_name == "combiner")
+    assert combiner_msg.is_error is False
+    assert combiner_msg.data == {"echo": {"echoed": "hi"}, "shout": {"shouted": "HI"}}
+
+
+@pytest.mark.asyncio
+async def test_fan_in_consumes_reports_every_missing_argument_at_once(monkeypatch):
+    """Both bad arguments should be named in a single error -- a fan-in
+    plugin missing two upstream references shouldn't need two separate
+    round-trips to find out about the second one.
+    """
+    _patch_registry(monkeypatch, [EchoPlugin(), ShoutPlugin(), CombinerPlugin()])
+    provider = ScriptedProvider(
+        [
+            AssistantTurn(text=None, tool_calls=[ToolCall(id="c1", name="combiner", arguments={})]),
+            AssistantTurn(text="gave up", tool_calls=[]),
+        ]
+    )
+    agent = AgentLoop(provider=provider, max_tool_retries=2)
+
+    new_messages = await agent.run(history=[], user_message="combine without either source", agent_conn=None)
+
+    tool_msgs = [m for m in new_messages if m.role == "tool"]
+    assert tool_msgs[0].is_error is True
+    assert "echo_call_id" in tool_msgs[0].content
+    assert "shout_call_id" in tool_msgs[0].content
