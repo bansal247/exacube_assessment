@@ -24,6 +24,11 @@ class Settings(BaseSettings):
 
     log_level: str = "INFO"
 
+    # The frontend's own origin -- CORS needs the exact scheme+host+port,
+    # not a guess. Defaults to the frontend service's published port in
+    # docker-compose.yml; override if that port changes.
+    frontend_origin: str = "http://localhost:3000"
+
     # Provider selection -- the whole point of the LLMProvider interface is
     # that this is a config choice, not a code change. Only the selected
     # provider's key is required (enforced below, not by making both

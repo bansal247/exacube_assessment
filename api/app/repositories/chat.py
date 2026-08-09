@@ -14,6 +14,35 @@ async def session_exists(conn: asyncpg.Connection, session_id: UUID) -> bool:
     return bool(await conn.fetchval("SELECT 1 FROM chat_sessions WHERE session_id = $1", session_id))
 
 
+async def list_sessions(
+    conn: asyncpg.Connection, limit: int, offset: int
+) -> tuple[list[asyncpg.Record], int]:
+    # preview is the session's first user message -- chat_sessions itself
+    # has no title/summary field, and generating one via the LLM would
+    # cost a call per session just to list them. The first message a user
+    # actually typed is a free, honest stand-in.
+    rows = await conn.fetch(
+        """
+        SELECT
+            s.session_id,
+            s.created_at,
+            s.updated_at,
+            (
+                SELECT m.content FROM chat_messages m
+                WHERE m.session_id = s.session_id AND m.role = 'user'
+                ORDER BY m.message_id LIMIT 1
+            ) AS preview
+        FROM chat_sessions s
+        ORDER BY s.updated_at DESC
+        LIMIT $1 OFFSET $2
+        """,
+        limit,
+        offset,
+    )
+    total = await conn.fetchval("SELECT COUNT(*) FROM chat_sessions")
+    return rows, total
+
+
 async def load_history(conn: asyncpg.Connection, session_id: UUID) -> list[Message]:
     rows = await conn.fetch(
         """

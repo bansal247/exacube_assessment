@@ -5,6 +5,9 @@ answers questions by writing SQL, chains tools (query → chart), and lets the u
 a dashboard. Everything the agent can do is a plugin — adding one doesn't touch any core file
 (see "How to write a new plugin" below).
 
+A frontend (chat, a data table + chart, and the pinned dashboard) consumes the API — plain
+HTML/JS, no build step, served as its own container.
+
 Scope note: `excel` and `powerpoint` plugins, and response streaming, weren't built this pass.
 Everything else in the brief was.
 
@@ -28,7 +31,8 @@ make clean                  # stop, drop volumes + locally built images
 ```
 
 `make up` starts Postgres, loads the dataset (safe to re-run), and starts the API on
-`http://localhost:8000` (`/docs` for interactive API docs). `POST /chat` is the agent endpoint.
+`http://localhost:8000` (`/docs` for interactive API docs) and the frontend on
+`http://localhost:3000`. `POST /chat` is the agent endpoint.
 
 ## Environment variables
 
@@ -39,6 +43,8 @@ All in `.env` (copy from `.env.example`).
 | `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | yes | `discord` / `discord` / `discord_analytics` | Postgres, and the role the loader and API connect as |
 | `POSTGRES_PORT` | no | `5432` | Host port Postgres is published on |
 | `API_PORT` | no | `8000` | Host port the API is published on |
+| `FRONTEND_PORT` | no | `3000` | Host port the frontend is published on |
+| `PUBLIC_HOST` | no | `localhost` | The hostname your browser actually uses to reach these containers. Only needs changing if Docker runs on a different machine than the browser (e.g. a remote server, accessed by IP or over Tailscale) — used to build both the frontend's API URL and the API's CORS allow-list from one value |
 | `AGENT_DB_USER` / `AGENT_DB_PASSWORD` | yes | `discord_agent` / `discord_agent` | The restricted DB role the agent runs SQL as — read-only on the analytics tables, read/write only on its own chat/pin tables. Created automatically by the loader |
 | `LLM_PROVIDER` | no | `openai` | `openai` or `anthropic` — which provider implementation to use |
 | `OPENAI_API_KEY` | yes, if `LLM_PROVIDER=openai` | — | platform.openai.com/api-keys. Not the same as a ChatGPT Plus/Pro subscription — separate product, separate billing |
@@ -92,6 +98,7 @@ api/app/
     sql_safety.py      parses and validates LLM-generated SQL
     replay.py          re-runs the tool-call chain behind a pinned artifact
 eval/        eval harness, runs against the live API
+frontend/    chat, data table + chart, pinned dashboard -- plain HTML/JS, its own container
 ```
 
 ## Design decisions and tradeoffs
@@ -156,7 +163,48 @@ cleanup job to write — the lifecycle story is that there isn't one.
 
 **Streaming was built, then cut.** An SSE `POST /chat/stream` endpoint existed alongside `/chat`
 and worked for the happy path. It was cut before completion to keep time for correctness and
-safety work instead. `POST /chat` (synchronous) is the one supported chat path today.
+safety work instead. `POST /chat` (synchronous) is the one supported chat path today. Cost: the
+frontend can't render tool calls and progress incrementally as the brief's Part 4 section asks
+for — a chat turn shows a single pending state, then the full reply and tool-call trace at once
+when the response arrives. "A stream that dies halfway" becomes "a request that fails or times
+out" instead, since there's no stream to die partway through.
+
+**Frontend is its own container, not static files mounted on the API.** Matches the brief's own
+"docker compose up brings up database, backend, frontend" wording, and keeps the frontend
+independently deployable/restartable. Cost: a real CORS policy on the API (`FRONTEND_ORIGIN`,
+scoped to the frontend's exact origin, not `*` — this API carries chat/pin state, not just public
+reads) instead of same-origin by construction, which a static mount would have gotten for free.
+
+**Frontend: plain HTML/JS, no build step, no framework.** Chosen deliberately over React/Vite —
+nothing here needs client-side routing, a component framework, or a bundler: three tabs (chat,
+explore, dashboard), each a small module that renders into a container element. Cost: no JSX,
+no reactive re-rendering — state changes are handled by re-rendering a container's children by
+hand. Chart.js is loaded from a CDN in `index.html` rather than vendored, for the same reason: no
+build step to run it through.
+
+**The chat trace and the pinned dashboard both render by `display_kind`, not by plugin name.**
+`ChatResponse.ToolCallTrace` gained a `display_kind` field (derived from the plugin registry, the
+same way `Pin.display_kind` already was) specifically so the frontend has one rendering function
+(`renderArtifact()`) for both live chat results and pinned ones, dispatching on `"table"` /
+`"chart"` / `"image"` / `"file"` — not a per-plugin-name branch in the frontend to go with the
+one Part 3 already avoids in the backend. A plugin whose result doesn't match what that renderer
+expects still falls back to raw JSON instead of crashing the turn.
+
+**Past conversations are listable and resumable, not just the one session held in `localStorage`.**
+`GET /chat/sessions` (id, timestamps, a preview — the session's first user message, not an
+LLM-generated summary, since generating one would cost a call per session just to list them) and
+`GET /chat/sessions/{id}/messages` (the full history, in the same shape a live turn already
+renders) back a session list in the chat sidebar. The frontend groups that flat message list back
+into turns itself — a loaded conversation renders through the exact same `renderToolCall()` /
+`renderArtifact()` a live turn uses, not a separate, simpler path for history.
+
+**Pinning is refresh, not edit.** `Refresh` re-executes a pin's stored tool-call chain and updates
+the cached numbers — it doesn't let you change the underlying query, filters, or chart type
+in place. That matches what the brief actually asks for ("re-runnable, not a dead PNG"); it
+doesn't ask for in-place editing. To change what a chart shows, the path is back through chat —
+ask an adjusted question, pin the new result, unpin the old one if it's no longer wanted. Pins
+stayed immutable-but-rerunnable rather than gaining their own query editor, which would have been
+a second, parallel way to construct a query outside the chat/plugin system entirely.
 
 **Two related data-quality issues in the raw CSVs** (found by inspection, not by a failed load):
 52 `(user_id, server_id)` collisions in `members.csv` — two different people sharing a generated

@@ -55,6 +55,12 @@ services:
       AGENT_ROW_CAP: ${AGENT_ROW_CAP:-1000}
       AGENT_QUERY_TIMEOUT_MS: ${AGENT_QUERY_TIMEOUT_MS:-5000}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # Browser-facing origin of the frontend (see frontend/Dockerfile) --
+      # this is what CORS checks against, not a container-network address.
+      # PUBLIC_HOST defaults to localhost but is the one thing to override
+      # (e.g. a Tailscale IP) when the browser isn't on the same machine
+      # as Docker -- see PUBLIC_HOST's own comment below.
+      FRONTEND_ORIGIN: http://${PUBLIC_HOST:-localhost}:${FRONTEND_PORT:-3000}
     ports:
       - "${API_PORT:-8000}:8000"
     depends_on:
@@ -62,6 +68,27 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    restart: unless-stopped
+    environment:
+      # Browser-facing address of the API -- the user's browser calls this
+      # directly, not through the compose network, so it has to be
+      # PUBLIC_HOST:<published port>, not http://api:8000.
+      API_BASE_URL: http://${PUBLIC_HOST:-localhost}:${API_PORT:-8000}
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:3000')"]
       interval: 10s
       timeout: 5s
       retries: 5

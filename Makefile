@@ -1,10 +1,10 @@
 .PHONY: up test eval down clean
 
 up:
-	cp -n .env.example .env
+	cp .env.example .env
 	docker compose up -d db
 	docker compose run --build --rm load
-	docker compose up -d --build api
+	docker compose up -d --build api frontend
 
 test:
 	docker compose run --build --rm test

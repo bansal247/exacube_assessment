@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.agent.anthropic_provider import AnthropicProvider
 from app.agent.loop import AgentLoop
@@ -44,6 +45,17 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Discord Analytics API", lifespan=lifespan)
 app.add_middleware(TraceIdMiddleware)
+# Frontend runs as its own container/origin (see docker-compose.yml's
+# `frontend` service) -- CORS is the only thing that makes that a separate
+# service instead of a same-origin static mount. Origin is configurable
+# since the published port can change; "*" isn't used because this API
+# also carries chat/pin state, not just public read-only data.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[settings.frontend_origin],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 register_exception_handlers(app)
 
 app.include_router(health.router)

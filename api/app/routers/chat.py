@@ -1,13 +1,17 @@
 import logging
 import time
+from uuid import UUID
 
 from asyncpg import Connection
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 
 from app.agent.messages import Message, sum_usage
+from app.agent.plugins.registry import get_plugin
 from app.agent.service import ChatService
 from app.routers.deps import get_agent_connection, get_chat_service
-from app.schemas.chat import ChatRequest, ChatResponse, ToolCallTrace
+from app.schemas.chat import ChatRequest, ChatResponse, SessionDetail, SessionList, ToolCallTrace
+from app.schemas.common import DEFAULT_LIMIT, MAX_LIMIT
+from app.services import chat_sessions as chat_sessions_service
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +52,23 @@ async def send_message(
     )
 
 
+@router.get("/sessions", response_model=SessionList)
+async def list_sessions(
+    limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
+    offset: int = Query(default=0, ge=0),
+    conn: Connection = Depends(get_agent_connection),
+) -> SessionList:
+    return await chat_sessions_service.list_sessions(conn, limit, offset)
+
+
+@router.get("/sessions/{session_id}/messages", response_model=SessionDetail)
+async def get_session_messages(
+    session_id: UUID,
+    conn: Connection = Depends(get_agent_connection),
+) -> SessionDetail:
+    return await chat_sessions_service.get_session_messages(conn, session_id)
+
+
 def _final_reply(messages: list[Message]) -> str:
     for m in reversed(messages):
         if m.role == "assistant" and m.content:
@@ -62,13 +83,16 @@ def _tool_call_trace(messages: list[Message]) -> list[ToolCallTrace]:
         if m.role != "tool":
             continue
         call = calls_by_id.get(m.tool_call_id)
+        name = m.tool_name or (call.name if call else "unknown")
+        plugin = get_plugin(name)
         trace.append(
             ToolCallTrace(
                 tool_call_id=m.tool_call_id,
-                name=m.tool_name or (call.name if call else "unknown"),
+                name=name,
                 arguments=call.arguments if call else {},
                 is_error=m.is_error,
                 result=m.data if m.data is not None else m.content,
+                display_kind=plugin.display_kind if plugin else None,
             )
         )
     return trace
