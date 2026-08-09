@@ -104,3 +104,61 @@ CREATE TABLE IF NOT EXISTS channel_daily_stats (
 
 CREATE INDEX IF NOT EXISTS idx_channel_daily_stats_date ON channel_daily_stats(date);
 CREATE INDEX IF NOT EXISTS idx_channel_daily_stats_server ON channel_daily_stats(server_id);
+
+-- Agent chat history.
+CREATE TABLE IF NOT EXISTS chat_sessions (
+    session_id    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- tool_calls/tool_call_id/tool_name carry the LLM provider's native
+-- tool-calling protocol (Anthropic tool_use/tool_result blocks today) so a
+-- session's history can be replayed back to the provider verbatim on the
+-- next turn, and so a pinned chart (Part 3 "Pinning") can trace back to the
+-- exact tool call and arguments that produced it.
+CREATE TABLE IF NOT EXISTS chat_messages (
+    message_id     BIGSERIAL PRIMARY KEY,
+    session_id     UUID NOT NULL REFERENCES chat_sessions(session_id) ON DELETE CASCADE,
+    role           TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'tool')),
+    content        TEXT,
+    tool_calls     JSONB,
+    tool_call_id   TEXT,
+    tool_name      TEXT,
+    is_error       BOOLEAN NOT NULL DEFAULT false,
+    -- Full structured plugin output (e.g. a chart's spec+data), distinct
+    -- from `content` -- which for role='tool' rows holds the short
+    -- LLM-facing summary that gets replayed to the provider on later
+    -- turns. `data` is what the API response and a future "pin this
+    -- chart" action read; kept separate so replaying history to the LLM
+    -- doesn't re-spend tokens on a large payload every turn.
+    data           JSONB,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id, message_id);
+
+-- Generic across any plugin's output, not chart-specific: a pin is "the
+-- chain of tool calls that produced this, plus a cached snapshot of what
+-- it produced." call_chain is an ordered JSON array of
+-- {tool_call_id, plugin_name, arguments} (see app/agent/replay.py) --
+-- refreshing re-executes each step in order through the plugin registry,
+-- not a single stored SQL string, so this works whether the chain is
+-- [query], [query, chart], or a future plugin/chain this table was never
+-- specifically designed around.
+CREATE TABLE IF NOT EXISTS pinned_artifacts (
+    pin_id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    session_id           UUID NOT NULL REFERENCES chat_sessions(session_id) ON DELETE CASCADE,
+    source_tool_call_id  TEXT NOT NULL,
+    plugin_name          TEXT NOT NULL,
+    display_kind         TEXT NOT NULL CHECK (display_kind IN ('table', 'chart', 'file')),
+    title                TEXT NOT NULL,
+    call_chain           JSONB NOT NULL,
+    cached_data          JSONB NOT NULL,
+    cached_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    "position"           INTEGER NOT NULL,
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT pinned_artifacts_position_key UNIQUE ("position") DEFERRABLE INITIALLY DEFERRED
+);
+
+CREATE INDEX IF NOT EXISTS idx_pinned_artifacts_session ON pinned_artifacts(session_id);

@@ -24,8 +24,8 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
       POSTGRES_DB: ${POSTGRES_DB}
-      API_DB_USER: ${API_DB_USER}
-      API_DB_PASSWORD: ${API_DB_PASSWORD}
+      AGENT_DB_USER: ${AGENT_DB_USER}
+      AGENT_DB_PASSWORD: ${AGENT_DB_PASSWORD}
     depends_on:
       db:
         condition: service_healthy
@@ -45,7 +45,12 @@ services:
       dockerfile: api/Dockerfile
     restart: unless-stopped
     environment:
-      DATABASE_URL: postgresql://${API_DB_USER}:${API_DB_PASSWORD}@db:5432/${POSTGRES_DB}
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      AGENT_DATABASE_URL: postgresql://${AGENT_DB_USER}:${AGENT_DB_PASSWORD}@db:5432/${POSTGRES_DB}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      AGENT_MODEL: ${AGENT_MODEL:-claude-3-5-sonnet-20241022}
+      AGENT_MAX_TOOL_RETRIES: ${AGENT_MAX_TOOL_RETRIES:-2}
+      AGENT_ROW_CAP: ${AGENT_ROW_CAP:-1000}
     ports:
       - "${API_PORT:-8000}:8000"
     depends_on:

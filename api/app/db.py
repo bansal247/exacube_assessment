@@ -3,10 +3,15 @@ import asyncpg
 from app.config import settings
 
 _pool: asyncpg.Pool | None = None
+_agent_pool: asyncpg.Pool | None = None
 
 
 async def _init_connection(conn: asyncpg.Connection) -> None:
     await conn.execute(f"SET statement_timeout = {settings.db_statement_timeout_ms}")
+
+
+async def _init_agent_connection(conn: asyncpg.Connection) -> None:
+    await conn.execute(f"SET statement_timeout = {settings.agent_query_timeout_ms}")
 
 
 async def connect_pool() -> None:
@@ -19,6 +24,16 @@ async def connect_pool() -> None:
     )
 
 
+async def connect_agent_pool() -> None:
+    global _agent_pool
+    _agent_pool = await asyncpg.create_pool(
+        settings.agent_database_url,
+        min_size=settings.agent_db_pool_min_size,
+        max_size=settings.agent_db_pool_max_size,
+        init=_init_agent_connection,
+    )
+
+
 async def disconnect_pool() -> None:
     global _pool
     if _pool is not None:
@@ -26,7 +41,20 @@ async def disconnect_pool() -> None:
         _pool = None
 
 
+async def disconnect_agent_pool() -> None:
+    global _agent_pool
+    if _agent_pool is not None:
+        await _agent_pool.close()
+        _agent_pool = None
+
+
 def get_pool() -> asyncpg.Pool:
     if _pool is None:
         raise RuntimeError("DB pool not initialized -- connect_pool() must run at startup")
     return _pool
+
+
+def get_agent_pool() -> asyncpg.Pool:
+    if _agent_pool is None:
+        raise RuntimeError("Agent DB pool not initialized -- connect_agent_pool() must run at startup")
+    return _agent_pool

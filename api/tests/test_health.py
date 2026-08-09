@@ -5,9 +5,9 @@ from app.routers import health as health_module
 
 
 @pytest.mark.asyncio
-async def test_health_ok(client, api_role_url, monkeypatch):
+async def test_health_ok(client, postgres_url, monkeypatch):
     pool = await asyncpg.create_pool(
-        api_role_url,
+        postgres_url,
         min_size=1,
         max_size=1,
     )

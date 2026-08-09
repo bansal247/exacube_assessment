@@ -26,6 +26,12 @@ class BadRequestError(ApiError):
         super().__init__("bad_request", message, status.HTTP_400_BAD_REQUEST, details)
 
 
+class UpstreamError(ApiError):
+    """Raised when an upstream service (e.g. database) is unreachable or returns an error"""
+    def __init__(self, message: str, details: object = None):
+        super().__init__("upstream_error", message, status.HTTP_502_BAD_GATEWAY, details)
+
+
 def _envelope(code: str, message: str, details: object = None) -> dict:
     return {"error": {"code": code, "message": message, "details": details}}
 

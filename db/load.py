@@ -377,17 +377,7 @@ def load_channel_daily_stats(cur, rows: list[dict]) -> None:
     print(f"channel_daily_stats: upserted {len(rows)} rows")
 
 
-def provision_api_role(cur, db_name: str) -> None:
-    """Create (or update) the least-privilege, SELECT-only role the FastAPI
-    service connects as. Idempotent: safe to run every load.
-
-    Kept separate from schema.sql because role/grant DDL needs identifiers
-    and a password interpolated safely (psycopg.sql.Identifier/Literal),
-    which schema.sql's plain-text execute() can't parameterize.
-    """
-    role = os.environ["API_DB_USER"]
-    password = os.environ["API_DB_PASSWORD"]
-
+def _create_or_update_login_role(cur, role: str, password: str) -> None:
     cur.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (role,))
     if cur.fetchone():
         cur.execute(
@@ -402,6 +392,12 @@ def provision_api_role(cur, db_name: str) -> None:
             )
         )
 
+
+def provision_agent_role(cur, db_name: str) -> None:
+    role = os.environ["AGENT_DB_USER"]
+    password = os.environ["AGENT_DB_PASSWORD"]
+    _create_or_update_login_role(cur, role, password)
+
     cur.execute(sql.SQL("GRANT CONNECT ON DATABASE {} TO {}").format(
         sql.Identifier(db_name), sql.Identifier(role)
     ))
@@ -412,7 +408,18 @@ def provision_api_role(cur, db_name: str) -> None:
             sql.Identifier(role)
         )
     )
-    print(f"api role: provisioned '{role}' with SELECT-only access")
+    cur.execute(
+        sql.SQL("GRANT SELECT, INSERT, UPDATE ON chat_sessions, chat_messages TO {}").format(
+            sql.Identifier(role)
+        )
+    )
+    cur.execute(
+        sql.SQL("GRANT USAGE ON SEQUENCE chat_messages_message_id_seq TO {}").format(sql.Identifier(role))
+    )
+    cur.execute(
+        sql.SQL("GRANT SELECT, INSERT, UPDATE, DELETE ON pinned_artifacts TO {}").format(sql.Identifier(role))
+    )
+    print(f"agent role: provisioned '{role}' with read-only domain access + chat history read/write")
 
 
 def main() -> None:
@@ -422,15 +429,15 @@ def main() -> None:
     db_name = os.environ.get("POSTGRES_DB")
     if not db_name:
         raise SystemExit("POSTGRES_DB environment variable is required")
-    if not os.environ.get("API_DB_USER") or not os.environ.get("API_DB_PASSWORD"):
-        raise SystemExit("API_DB_USER and API_DB_PASSWORD environment variables are required")
+    if not os.environ.get("AGENT_DB_USER") or not os.environ.get("AGENT_DB_PASSWORD"):
+        raise SystemExit("AGENT_DB_USER and AGENT_DB_PASSWORD environment variables are required")
 
     schema_sql = (Path(__file__).resolve().parent / "schema.sql").read_text()
 
     with psycopg.connect(dsn) as conn:
         with conn.cursor() as cur:
             cur.execute(schema_sql)
-            provision_api_role(cur, db_name)
+            provision_agent_role(cur, db_name)
         conn.commit()
 
         with conn.cursor() as cur:
