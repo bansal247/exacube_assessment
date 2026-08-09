@@ -121,5 +121,38 @@ services:
       api:
         condition: service_healthy
 
+  loadtest-chat:
+    image: grafana/k6:latest
+    profiles: ["tools"]
+    # grafana/k6's own image runs as its own non-root user internally,
+    # which doesn't own the bind-mounted ./loadtest/results on the host --
+    # pinned to uid 1000 (this repo's convention everywhere else too --
+    # see api/Dockerfile's appuser) so the summary-export write succeeds
+    # instead of failing with permission denied.
+    user: "1000:1000"
+    environment:
+      API_BASE_URL: http://api:8000
+    volumes:
+      - ./loadtest:/scripts
+      - ./loadtest/results:/results
+    depends_on:
+      api:
+        condition: service_healthy
+    command: run --summary-export=/results/chat_summary.json /scripts/chat.js
+
+  loadtest-artifacts:
+    image: grafana/k6:latest
+    profiles: ["tools"]
+    user: "1000:1000"
+    environment:
+      API_BASE_URL: http://api:8000
+    volumes:
+      - ./loadtest:/scripts
+      - ./loadtest/results:/results
+    depends_on:
+      api:
+        condition: service_healthy
+    command: run --summary-export=/results/artifacts_summary.json /scripts/artifacts.js
+
 volumes:
   pgdata:

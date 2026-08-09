@@ -28,6 +28,8 @@ make test                   # pytest suite, real Postgres via testcontainers
 make lint                   # ruff, same config CI uses
 make typecheck              # mypy on api/app, same config CI uses
 make eval                   # eval harness against the live API (costs real tokens)
+make loadtest-chat          # k6 against POST /chat, cost-bounded (~24 real calls total)
+make loadtest-artifacts     # k6 against the artifact path, ramped -- no LLM calls beyond setup
 make down                   # stop, keep data
 make clean                  # stop, drop volumes + locally built images
 ```
@@ -294,13 +296,87 @@ scores:
 - **Latency and token cost**, logged per turn and summarized with a rough dollar estimate against
   a fixed per-token price (an estimate, not a billing record).
 
-**Results: [PLACEHOLDER].** Run `make eval` and paste the summary here — routing score,
-correctness score, which categories failed, and your read on why.
+**Results** (`gpt-4o-mini`, 17 questions):
+
+| Category | Questions | Routing | Correctness |
+|---|---|---|---|
+| simple_lookup | 3 | 3/3 | 3/3 |
+| time_series | 3 | 3/3 | 3/3 |
+| ambiguous | 2 | 2/2 | not scored (by design) |
+| chart | 2 | 2/2 | 2/2 |
+| file | 2 | 2/2 | 2/2 |
+| chain | 1 | 1/1 | 1/1 |
+| unanswerable | 4 | 4/4 | 4/4 |
+| **Total** | **17** | **17/17 (100%)** | **15/15 scored (100%)** |
+
+Avg latency 3.58s/turn, ~54.6k input / ~3.3k output tokens across the run, ≈$0.21 estimated cost.
+
+A clean 100% is exactly the kind of number the brief warns to be suspicious of without a
+methodology behind it, so the methodology is worth restating plainly here: correctness scoring
+compares the agent's actual query result against a hand-written reference query's result, not the
+prose reply — and it only reached 100% after two real, separate fixes earlier in this project:
+(1) the harness now tells the agent what to alias its SQL columns as, so scoring isn't at the
+mercy of whichever alias name the model happens to pick that run, and (2) `schema_context.py`'s
+description of the `members` table was missing two real columns (`discriminator`, `avatar_hash`)
+— the agent was writing `NULL AS discriminator` for a column it didn't know existed, which a
+live eval run caught directly. Both are documented above under "Design decisions." Every category
+genuinely passing routing and correctness after those fixes is real, not a scoring artifact
+papering over failures — but it's still a small sample (17 questions, one model, one run). It
+reflects `gpt-4o-mini` specifically, and hasn't been repeated across multiple runs to check for
+variance, or against the Anthropic provider.
 
 ## Load test results
 
-**[PLACEHOLDER — not done this pass.]** Load-testing the chat and artifact endpoints (p50/p95/
-p99, concurrent requests, concurrent renders) wasn't reached this pass.
+Two separate k6 scripts (`loadtest/`), because they have fundamentally different cost profiles.
+
+**`POST /chat`** — every request is a real LLM call, so unlike a typical load test this one
+doesn't ramp toward a breaking point; scaling that search up costs real, unbounded money. Instead
+it's cost-bounded: a fixed 24 total requests (`shared-iterations`, not a duration), spread across
+3 concurrent VUs, using a small pool of short questions. This measures real request latency under
+modest concurrency, deliberately not "where does this fall over" — finding that number for real
+would need a budget this pass didn't have. `make loadtest-chat`.
+
+**The artifact-generation path** (`GET /pins`, `GET /pins/{id}/download`, `POST /pins/{id}/refresh`)
+— none of these touch the LLM (refresh re-executes the plugin chain directly; download renders
+from cached data), so this one does ramp for real: 1 → 10 → 30 → 60 VUs over a minute, looking for
+where latency/error rate actually degrades. `setup()` makes exactly two real `/chat` calls up
+front to create a query pin and a chart pin to run against — fixed cost, independent of how high
+the ramp goes. `make loadtest-artifacts`.
+
+**Results.**
+
+| | `POST /chat` (24 requests, 3 VUs) | Artifact path (ramped 1→60 VUs) |
+|---|---|---|
+| Throughput | 0.94 req/s | 168.8 req/s (42.2 full iterations/s) |
+| p50 | 1957ms | 7.4ms |
+| p90 | 2538ms | 16.4ms |
+| p95 | 2753ms | 21.2ms |
+| max | 3064ms | 3804ms (one outlier) |
+| Error rate | 0% | 0% |
+
+The artifact path did **not** fall over — 0% errors and low double-digit-ms p95 all the way to 60
+VUs means the ramp ceiling wasn't high enough to find its actual breaking point; that would need a
+higher target than this pass tested. The one real anomaly is its max latency: 3804ms against a
+p95 of 21ms, a ~180x spike on a single (or few) request(s) while everything else stayed fast. The
+likely cause, reasoning from the code rather than profiling it directly: each iteration makes two
+DB-touching calls (`refresh query` + `refresh chart`), and `AGENT_DB_POOL_MAX_SIZE` defaults to
+10 connections — at 60 concurrent VUs that's up to 120 simultaneous connection requests against a
+10-connection pool. A connection-pool queueing spike is the more likely explanation than a broken
+code path, but this run alone doesn't prove it; would want to watch pool utilization directly to
+confirm.
+
+`/chat`'s numbers tell a different, simpler story: median latency (1957ms) is essentially all LLM
+round-trip time, not application overhead — compare the artifact path's 7.4ms median for
+comparable-weight backend work with no LLM in the loop. That ~260x gap is the real bottleneck in
+this system, and it's a provider-latency problem, not a code problem; no amount of backend
+optimization moves that number. This matches the (still open) Failure-modes gap below: no
+timeout/retry wrapper exists around the provider call, and at this latency, a hung or slow
+provider call is the single most disruptive thing that can happen to this endpoint under load.
+
+Streaming and concurrent file renders — the two cases the brief calls out as most interesting —
+aren't reachable by either script: streaming was cut in Part 3, and the only downloadable
+artifact today is `query`'s CSV export, which renders near-instantly (no `excel`/`powerpoint`
+plugin exists to make "concurrent file renders" a meaningful case yet).
 
 ## Failure modes
 

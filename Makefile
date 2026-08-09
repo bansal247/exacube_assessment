@@ -1,4 +1,4 @@
-.PHONY: up test lint typecheck eval down clean
+.PHONY: up test lint typecheck eval loadtest-chat loadtest-artifacts down clean
 
 up:
 	cp -n .env.example .env
@@ -19,6 +19,18 @@ typecheck:
 # sends real chat turns, costs real tokens. Results land in eval/results/.
 eval:
 	docker compose run --build --rm eval
+
+# Assumes `make up` is already running. Cost-bounded (~24 real /chat
+# calls total, fixed regardless of how long it runs) -- see
+# loadtest/chat.js. Results land in loadtest/results/.
+loadtest-chat:
+	docker compose run --rm loadtest-chat
+
+# Assumes `make up` is already running. Two real /chat calls in setup(),
+# then ramps concurrency against non-LLM endpoints only (list/refresh/
+# download) -- see loadtest/artifacts.js. Results land in loadtest/results/.
+loadtest-artifacts:
+	docker compose run --rm loadtest-artifacts
 
 down:
 	docker compose down
