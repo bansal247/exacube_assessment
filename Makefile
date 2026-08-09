@@ -1,4 +1,4 @@
-.PHONY: up test lint typecheck eval loadtest-chat loadtest-artifacts down clean
+.PHONY: up test lint typecheck eval loadtest-chat loadtest-artifacts down clean logs
 
 up:
 	cp -n .env.example .env
@@ -37,3 +37,6 @@ down:
 
 clean:
 	docker compose down -v --rmi local --remove-orphans
+
+logs:
+	docker compose logs -f --tail=200

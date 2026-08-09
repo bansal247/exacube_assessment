@@ -36,9 +36,15 @@ MAX_ITERATIONS = 8
 
 
 class AgentLoop:
-    def __init__(self, provider: LLMProvider, max_tool_retries: int):
+    def __init__(self, provider: LLMProvider, max_tool_retries: int, consumes_hint_limit: int = 5):
         self._provider = provider
         self._max_tool_retries = max_tool_retries
+        # How many candidate ids _recent_first_candidates shows at once --
+        # see Settings.agent_consumes_hint_limit for why this is capped.
+        # Defaulted here (not required) so existing callers/tests that
+        # don't care about this specific behavior don't all need updating;
+        # main.py passes the real configured value explicitly.
+        self._consumes_hint_limit = consumes_hint_limit
 
     async def run(self, history: list[Message], user_message: str, agent_conn: asyncpg.Connection) -> list[Message]:
         """Returns the new messages produced this turn (the user message
@@ -178,8 +184,7 @@ class AgentLoop:
             is_error=False,
         )
 
-    @staticmethod
-    def _validate_consumes(call: ToolCall, plugin: Plugin, context: PluginContext) -> list[str]:
+    def _validate_consumes(self, call: ToolCall, plugin: Plugin, context: PluginContext) -> list[str]:
         """Checks every (argument_name, required_plugin_name) pair in
         plugin.consumes -- a fan-in plugin with two upstream dependencies
         gets both checked and, if both are wrong, both reported in one
@@ -193,7 +198,7 @@ class AgentLoop:
             # id ("query_1") on both retries rather than trying something
             # new. Telling it what's valid, not just that it was wrong,
             # gives a retry a concrete string to copy instead of another guess.
-            candidates = AgentLoop._recent_first_candidates(context, required_plugin)
+            candidates = self._recent_first_candidates(context, required_plugin)
             hint = f" Valid '{required_plugin}' call ids, most recent first: {candidates}." if candidates else ""
 
             source_call_id = call.arguments.get(arg_name)
@@ -226,8 +231,7 @@ class AgentLoop:
             is_error=True,
         )
 
-    @staticmethod
-    def _tool_schemas(context: PluginContext) -> list[ToolSchema]:
+    def _tool_schemas(self, context: PluginContext) -> list[ToolSchema]:
         """Builds each round, not once per turn -- a plugin that `consumes`
         one or more other plugins' output gets the *actual* current
         candidate ids spliced into each of those argument's descriptions,
@@ -242,12 +246,11 @@ class AgentLoop:
         for p in all_plugins():
             input_schema = p.input_schema
             if p.consumes:
-                input_schema = AgentLoop._with_consumes_hints(input_schema, p.consumes, context)
+                input_schema = self._with_consumes_hints(input_schema, p.consumes, context)
             schemas.append(ToolSchema(name=p.name, description=p.description, input_schema=input_schema))
         return schemas
 
-    @staticmethod
-    def _with_consumes_hints(input_schema: dict, consumes: dict[str, str], context: PluginContext) -> dict:
+    def _with_consumes_hints(self, input_schema: dict, consumes: dict[str, str], context: PluginContext) -> dict:
         # Never mutate `input_schema` in place -- it's the plugin's own
         # class-level dict, shared across every request this long-lived
         # AgentLoop instance ever handles. Build fresh copies of exactly
@@ -257,23 +260,27 @@ class AgentLoop:
         # referencing the original, shared objects.
         properties = {**input_schema.get("properties", {})}
         for arg_name, required_plugin in consumes.items():
-            candidates = AgentLoop._recent_first_candidates(context, required_plugin)
+            candidates = self._recent_first_candidates(context, required_plugin)
             if candidates:
-                # Most-recent-first, and said so explicitly -- found from a
-                # live run where the model referenced a real but *stale*
-                # id (a `query` call from several messages earlier in the
-                # same session, not the one it had just run this turn) and
-                # repeated that same wrong choice on retry. The candidate
-                # list spans the whole session (cross-turn chaining is
-                # deliberate -- see _context_from_history), so nothing
-                # here rules out an older id being the *right* answer to a
-                # question like "chart the one from before" -- this is a
-                # steer, not a hard constraint.
+                # Most-recent-first, said so explicitly, AND described --
+                # found from two separate live-run failures. The recency
+                # framing fixes the case where only one candidate is truly
+                # relevant (a stale id from several messages back kept
+                # winning over the fresh one). The per-candidate
+                # description fixes a different case: two tool calls
+                # requested in the *same* round, each needing a
+                # *different* one of two simultaneously-valid candidates,
+                # ended up with their ids swapped -- a bare id list gives
+                # the model nothing to disambiguate with beyond recency,
+                # which only helps when recency is actually the right
+                # signal. It isn't here; content is.
                 hint = (
-                    f" REAL IDS AVAILABLE RIGHT NOW, most recent first: {candidates}. You MUST copy one of "
-                    f"these exact strings -- never invent a new id such as 'query_1'. The first one listed "
-                    f"is the most recent '{required_plugin}' call -- that's almost always the right one for "
-                    f"a follow-up request, unless the user clearly asked about an earlier result."
+                    f" REAL IDS AVAILABLE RIGHT NOW, most recent first (id, then what it contains): "
+                    f"{candidates}. Copy only the id portion exactly, not the description -- never invent a "
+                    f"new id such as 'query_1'. If only one is listed, it's almost certainly the right one "
+                    f"for a follow-up request. If more than one is listed, match the one whose description "
+                    f"actually has what you need (the right columns, say) -- do not default to 'most recent' "
+                    f"when a different one is the one that actually fits."
                 )
             else:
                 hint = (
@@ -285,13 +292,40 @@ class AgentLoop:
                 properties[arg_name] = {**prop, "description": prop.get("description", "") + hint}
         return {**input_schema, "properties": properties}
 
-    @staticmethod
-    def _recent_first_candidates(context: PluginContext, required_plugin: str) -> list[str]:
+    def _recent_first_candidates(self, context: PluginContext, required_plugin: str) -> list[str]:
         # context.prior_call_names is insertion-ordered (oldest first --
         # seeded chronologically from history, appended to chronologically
         # as the turn progresses), so reversing gives most-recent-first --
         # the order a model choosing from this list should actually prefer.
-        return [cid for cid, name in reversed(context.prior_call_names.items()) if name == required_plugin]
+        # Capped at self._consumes_hint_limit (Settings.agent_consumes_hint_limit)
+        # -- a long session's candidate list would otherwise grow without
+        # bound, every round, for every consuming plugin. Older ids past
+        # the cap are still valid if explicitly referenced (prior_results
+        # still has them); they just stop being actively suggested.
+        ids = [cid for cid, name in reversed(context.prior_call_names.items()) if name == required_plugin]
+        return [self._describe_candidate(context, cid) for cid in ids[: self._consumes_hint_limit]]
+
+    @staticmethod
+    def _describe_candidate(context: PluginContext, call_id: str) -> str:
+        """A short, model-facing description of what a candidate call
+        actually produced -- table-shaped results (the common case: a
+        `query` result) get their column names and row count; anything
+        else that carries its own `title` (a `chart` result, say) gets
+        that; otherwise just the bare id. Not every plugin's result is
+        describable this way yet (image_chart's PNG result carries neither
+        columns nor a stored title in `data`) -- those candidates fall
+        back to a bare id, same as before this existed.
+        """
+        data = context.prior_results.get(call_id)
+        if isinstance(data, dict):
+            rows = data.get("rows")
+            if isinstance(rows, list) and rows and isinstance(rows[0], dict):
+                columns = sorted(rows[0].keys())
+                return f"{call_id} (columns: {columns}, {len(rows)} rows)"
+            title = data.get("title")
+            if isinstance(title, str) and title.strip():
+                return f"{call_id} (title: {title!r})"
+        return call_id
 
     @staticmethod
     def _context_from_history(history: list[Message], agent_conn: asyncpg.Connection) -> PluginContext:

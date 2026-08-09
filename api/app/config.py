@@ -22,6 +22,15 @@ class Settings(BaseSettings):
 
     agent_row_cap: int = 1000
 
+    # How many candidate ids the loop shows a consuming plugin (chart,
+    # image_chart, ...) in its schema hint / validation-error text, most
+    # recent first -- see AgentLoop._recent_first_candidates(). Uncapped
+    # would mean a long session's hint grows without bound, every round,
+    # for every consuming plugin; capping doesn't invalidate older ids
+    # (context.prior_results still has them, and an explicit reference
+    # still validates), it just stops actively suggesting them.
+    agent_consumes_hint_limit: int = 5
+
     log_level: str = "INFO"
 
     # The frontend's own origin -- CORS needs the exact scheme+host+port,

@@ -57,6 +57,7 @@ All in `.env` (copy from `.env.example`).
 | `AGENT_MAX_TOOL_RETRIES` | no | `2` | How many failed tool-call rounds the agent tolerates before giving up and answering in prose |
 | `AGENT_ROW_CAP` | no | `1000` | Max rows any agent-run SQL can return |
 | `AGENT_QUERY_TIMEOUT_MS` | no | `5000` | Statement timeout for the agent's DB connections |
+| `AGENT_CONSUMES_HINT_LIMIT` | no | `5` | How many candidate ids (most recent first) the loop actively suggests to a consuming plugin at once — older ones stay valid if referenced, just stop being proactively hinted |
 | `DB_POOL_MIN_SIZE` / `DB_POOL_MAX_SIZE` | no | `1` / `10` | API's own Postgres connection pool size |
 | `DB_STATEMENT_TIMEOUT_MS` | no | `5000` | Statement timeout for the API's own (non-agent) DB connections |
 | `AGENT_DB_POOL_MIN_SIZE` / `AGENT_DB_POOL_MAX_SIZE` | no | `1` / `10` | Agent's own Postgres connection pool size |
@@ -364,6 +365,22 @@ into it, on top of a validation error that lists them if a call still gets it wr
 instructions alone weren't reliable enough for the model to consistently reference the right
 prior tool call by id. Showing the real ids directly in the schema, not just after a failure, is
 the more complete of the two — kept both rather than relying on either alone.
+
+**Candidate-id hints are ordered most-recent-first, capped, and describe what each candidate
+actually contains — three separate fixes for three separate failure modes, found from three
+separate live runs.** Chronological (oldest-first) ordering meant a stale id from several messages
+back kept beating the fresh one a follow-up request actually meant — fixed by reversing the order
+and saying so explicitly. An uncapped list would grow without bound in a long session, every
+round, for every consuming plugin — fixed with `AGENT_CONSUMES_HINT_LIMIT` (default 5; older ids
+past the cap stay valid if referenced, they just stop being actively suggested). Neither fix
+touches the failure mode that mattered most: two tool calls requested in the *same* round, each
+needing a *different* one of two simultaneously-valid candidates, had their ids swapped — a bare
+id list gives a model nothing to disambiguate with beyond recency, which isn't the right signal
+when both candidates are equally recent. Fixed by describing each candidate (a `query` result's
+columns and row count; a `chart` result's own `title`) so the model can match "the call that has
+the columns I need" to a real id instead of guessing. Not every result is describable this way yet
+— `image_chart`'s PNG output carries neither columns nor a stored title — those candidates still
+fall back to a bare id.
 
 **Downloads render on demand; nothing is persisted server-side.** `GET /pins/{id}/download` calls
 the producing plugin's `to_file()` fresh on every request. No temp files, no storage location, no

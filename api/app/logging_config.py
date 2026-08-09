@@ -27,6 +27,27 @@ trace_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar("trace
 _STANDARD_RECORD_ATTRS = frozenset(logging.makeLogRecord({}).__dict__) | {"message", "taskName"}
 
 
+class _QuietHealthAccessFilter(logging.Filter):
+    """Suppresses uvicorn's own access-log line for a successful (200)
+    GET /health -- Docker's healthcheck (docker-compose.yml) polls it every
+    few seconds for the container's entire lifetime, and a successful one
+    is pure noise. A failing healthcheck still logs normally -- that's
+    exactly the signal worth keeping. Reads record.args directly rather
+    than substring-matching the formatted message: uvicorn's access log
+    call is `logger.info('%s - "%s %s HTTP/%s" %d', client_addr, method,
+    full_path, http_version, status_code)`, so record.args is that same
+    5-tuple -- args[2] is the path, args[4] the status, both exact, where
+    matching the rendered string could false-positive on an unrelated
+    request that happens to mention "/health" or "200" somewhere in it.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if isinstance(args, tuple) and len(args) >= 5 and args[2] == "/health" and str(args[4]) == "200":
+            return False
+        return True
+
+
 class JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         payload = {
@@ -58,3 +79,5 @@ def configure_logging(level: str = "INFO") -> None:
         uv_logger = logging.getLogger(name)
         uv_logger.handlers = []
         uv_logger.propagate = True
+
+    logging.getLogger("uvicorn.access").addFilter(_QuietHealthAccessFilter())

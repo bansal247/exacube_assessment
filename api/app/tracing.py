@@ -18,6 +18,15 @@ import uuid
 
 logger = logging.getLogger("app.request")
 
+# Docker's own healthcheck (see docker-compose.yml) hits this every few
+# seconds for the container's entire lifetime -- a *successful* one carries
+# no diagnostic value and would otherwise dominate real log volume. A
+# failing one is the opposite -- exactly the signal you'd want in the
+# logs -- so only 200s on this path are suppressed, not the path itself
+# unconditionally.
+_QUIET_PATH = "/health"
+_QUIET_STATUS = 200
+
 
 class TraceIdMiddleware:
     def __init__(self, app):
@@ -46,17 +55,24 @@ class TraceIdMiddleware:
                 message["headers"] = [*message.get("headers", []), (b"x-trace-id", trace_id.encode())]
             await send(message)
 
-        logger.info("request started", extra={"http_method": method, "http_path": path})
+        # "started" alone (before the outcome is known) never carries more
+        # signal than "completed" already does below -- and "completed"
+        # always fires (this is in `finally`), so skipping "started"
+        # outright for the quiet path doesn't cost any failure visibility.
+        if path != _QUIET_PATH:
+            logger.info("request started", extra={"http_method": method, "http_path": path})
         try:
             await self._app(scope, receive, send_wrapper)
         finally:
-            logger.info(
-                "request completed",
-                extra={
-                    "http_method": method,
-                    "http_path": path,
-                    "status_code": status_holder.get("status_code"),
-                    "duration_ms": (time.monotonic() - started_at) * 1000,
-                },
-            )
+            status_code = status_holder.get("status_code")
+            if path != _QUIET_PATH or status_code != _QUIET_STATUS:
+                logger.info(
+                    "request completed",
+                    extra={
+                        "http_method": method,
+                        "http_path": path,
+                        "status_code": status_code,
+                        "duration_ms": (time.monotonic() - started_at) * 1000,
+                    },
+                )
             trace_id_var.reset(token)

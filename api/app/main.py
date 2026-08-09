@@ -41,7 +41,11 @@ async def lifespan(app: FastAPI):
     await connect_agent_pool()
 
     discover_plugins()
-    loop = AgentLoop(provider=_build_provider(), max_tool_retries=settings.agent_max_tool_retries)
+    loop = AgentLoop(
+        provider=_build_provider(),
+        max_tool_retries=settings.agent_max_tool_retries,
+        consumes_hint_limit=settings.agent_consumes_hint_limit,
+    )
     app.state.chat_service = ChatService(loop=loop)
 
     yield
