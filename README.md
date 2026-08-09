@@ -92,6 +92,11 @@ first request.
    should be downloadable (`ArtifactFile(filename, content_type, content: bytes)`).
 5. Decorate the class with `@register_plugin`. Discovery is a directory scan — nothing else to
    wire up.
+6. Need a Python package your plugin uses that isn't already installed? Add it to
+   `api/requirements.txt` and rebuild (`docker compose up -d --build api`, or just `make up`,
+   which already rebuilds). This isn't a core-file edit in the sense that matters — it's
+   dependency management, not agent logic — see "What I'd do differently" for a more
+   self-contained alternative not built this pass.
 
 Nothing in `loop.py`, `pins.py`, any router, or the system prompt needs touching.
 
@@ -431,4 +436,16 @@ What happens today, reasoned from the code, not measured under load:
 
 ## What I'd do differently or additionally with more time
 
-**[PLACEHOLDER — fill in.]**
+- **Per-plugin dependencies as their own file, not a shared `requirements.txt` edit.** Right now a
+  plugin needing a new Python package (a hypothetical `excel` plugin needing `openpyxl`, say)
+  means editing the shared `api/requirements.txt` and rebuilding — a real, sanctioned exception to
+  "no core-file edits" (dependency management isn't agent logic), but not as self-contained as it
+  could be. ComfyUI's custom-node system is the precedent worth following: each plugin lives in
+  its own folder with a sibling `requirements.txt`; a Docker build stage globs
+  `plugins/*/requirements.txt` and installs the union of all of them as one layer — before copying
+  plugin code, so it doesn't break layer caching the way parsing plugin *source* for inline
+  dependency metadata (e.g. PEP 723) would — and discovery walks one folder level deeper instead
+  of one file. Not built this pass; the shared `requirements.txt` edit is standard practice and
+  works fine, just less "drop in one self-contained folder" than it could be.
+
+**[PLACEHOLDER — fill in the rest.]**
