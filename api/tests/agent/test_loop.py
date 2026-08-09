@@ -253,6 +253,46 @@ async def test_consuming_plugin_schema_shows_real_candidate_id_after_upstream_ca
 
 
 @pytest.mark.asyncio
+async def test_candidate_hint_lists_most_recent_upstream_call_first(monkeypatch):
+    """Regression test for a real production bug: with two 'echo' calls in
+    context (an earlier one from a prior /chat turn, a fresher one from
+    this turn), the model referenced the *stale* one -- chart's actual bug
+    was a `query` call from several messages earlier in the same session,
+    not the query it had just run. The candidate list was chronological
+    (oldest first), which is the wrong order for a model that anchors on
+    the first item; it must list the most recent call first instead.
+    """
+    _patch_registry(monkeypatch, [EchoPlugin(), ChainReaderPlugin()])
+
+    first_provider = ScriptedProvider(
+        [
+            AssistantTurn(text=None, tool_calls=[ToolCall(id="c1", name="echo", arguments={"value": "old"})]),
+            AssistantTurn(text="echoed", tool_calls=[]),
+        ]
+    )
+    first_agent = AgentLoop(provider=first_provider, max_tool_retries=2)
+    turn_one_messages = await first_agent.run(history=[], user_message="echo old", agent_conn=None)
+
+    second_provider = ScriptedProvider(
+        [
+            AssistantTurn(text=None, tool_calls=[ToolCall(id="c2", name="echo", arguments={"value": "new"})]),
+            AssistantTurn(text="ok", tool_calls=[]),
+        ]
+    )
+    second_agent = AgentLoop(provider=second_provider, max_tool_retries=2)
+    await second_agent.run(history=turn_one_messages, user_message="echo new", agent_conn=None)
+
+    # Round 1 (index 1) is the call made *after* the second echo (id "c2")
+    # succeeded -- by now both c1 (an earlier turn) and c2 (this turn) are
+    # valid candidates.
+    _messages_sent, tools_offered = second_provider.calls[1]
+    chain_reader_schema = next(t for t in tools_offered if t.name == "chain_reader")
+    description = chain_reader_schema.input_schema["properties"]["source_call_id"]["description"]
+
+    assert description.index("c2") < description.index("c1")
+
+
+@pytest.mark.asyncio
 async def test_consuming_plugin_schema_before_any_upstream_call_says_call_it_first(monkeypatch):
     _patch_registry(monkeypatch, [EchoPlugin(), ChainReaderPlugin()])
     provider = ScriptedProvider([AssistantTurn(text="ok", tool_calls=[])])

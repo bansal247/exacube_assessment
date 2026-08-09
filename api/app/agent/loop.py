@@ -193,8 +193,8 @@ class AgentLoop:
             # id ("query_1") on both retries rather than trying something
             # new. Telling it what's valid, not just that it was wrong,
             # gives a retry a concrete string to copy instead of another guess.
-            candidates = [cid for cid, name in context.prior_call_names.items() if name == required_plugin]
-            hint = f" Valid '{required_plugin}' call ids this turn: {candidates}." if candidates else ""
+            candidates = AgentLoop._recent_first_candidates(context, required_plugin)
+            hint = f" Valid '{required_plugin}' call ids, most recent first: {candidates}." if candidates else ""
 
             source_call_id = call.arguments.get(arg_name)
             if not source_call_id:
@@ -257,11 +257,23 @@ class AgentLoop:
         # referencing the original, shared objects.
         properties = {**input_schema.get("properties", {})}
         for arg_name, required_plugin in consumes.items():
-            candidates = [cid for cid, name in context.prior_call_names.items() if name == required_plugin]
+            candidates = AgentLoop._recent_first_candidates(context, required_plugin)
             if candidates:
+                # Most-recent-first, and said so explicitly -- found from a
+                # live run where the model referenced a real but *stale*
+                # id (a `query` call from several messages earlier in the
+                # same session, not the one it had just run this turn) and
+                # repeated that same wrong choice on retry. The candidate
+                # list spans the whole session (cross-turn chaining is
+                # deliberate -- see _context_from_history), so nothing
+                # here rules out an older id being the *right* answer to a
+                # question like "chart the one from before" -- this is a
+                # steer, not a hard constraint.
                 hint = (
-                    f" REAL IDS AVAILABLE RIGHT NOW: {candidates}. You MUST copy one of these exact "
-                    f"strings -- never invent a new id such as 'query_1'."
+                    f" REAL IDS AVAILABLE RIGHT NOW, most recent first: {candidates}. You MUST copy one of "
+                    f"these exact strings -- never invent a new id such as 'query_1'. The first one listed "
+                    f"is the most recent '{required_plugin}' call -- that's almost always the right one for "
+                    f"a follow-up request, unless the user clearly asked about an earlier result."
                 )
             else:
                 hint = (
@@ -272,6 +284,14 @@ class AgentLoop:
             if prop is not None:
                 properties[arg_name] = {**prop, "description": prop.get("description", "") + hint}
         return {**input_schema, "properties": properties}
+
+    @staticmethod
+    def _recent_first_candidates(context: PluginContext, required_plugin: str) -> list[str]:
+        # context.prior_call_names is insertion-ordered (oldest first --
+        # seeded chronologically from history, appended to chronologically
+        # as the turn progresses), so reversing gives most-recent-first --
+        # the order a model choosing from this list should actually prefer.
+        return [cid for cid, name in reversed(context.prior_call_names.items()) if name == required_plugin]
 
     @staticmethod
     def _context_from_history(history: list[Message], agent_conn: asyncpg.Connection) -> PluginContext:
