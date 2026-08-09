@@ -1,13 +1,25 @@
-FROM python:3.12-slim
+FROM python:3.12-slim AS builder
 
 WORKDIR /repo
-COPY db/schema.sql db/schema.sql
 COPY api/requirements.txt api/requirements.txt
 COPY api/dev-requirements.txt api/dev-requirements.txt
-RUN pip install --no-cache-dir -r api/dev-requirements.txt
+RUN pip install --no-cache-dir --user -r api/dev-requirements.txt
+
+FROM python:3.12-slim
+
+# Stays root, unlike every other container here -- it mounts the host's
+# /var/run/docker.sock (for testcontainers) and a non-root user's GID
+# would need to match the host docker group's GID to use it, which isn't
+# knowable at build time / portable across machines. Dev/CI-only, never
+# deployed, never handles untrusted input -- the tradeoff is acceptable
+# here specifically.
+WORKDIR /repo
+COPY --from=builder /root/.local /root/.local
+COPY db/schema.sql db/schema.sql
 COPY api/app api/app
 COPY api/tests api/tests
 COPY api/pytest.ini api/pytest.ini
 
 WORKDIR /repo/api
+ENV PATH=/root/.local/bin:$PATH
 CMD ["pytest"]

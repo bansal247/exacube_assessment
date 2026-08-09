@@ -82,6 +82,10 @@ def _tool_call_trace(messages: list[Message]) -> list[ToolCallTrace]:
     for m in messages:
         if m.role != "tool":
             continue
+        # append_messages always sets tool_call_id for a role="tool"
+        # message -- Message's own type is str | None because it's shared
+        # across all three roles, not because this can be missing here.
+        assert m.tool_call_id is not None
         call = calls_by_id.get(m.tool_call_id)
         name = m.tool_name or (call.name if call else "unknown")
         plugin = get_plugin(name)

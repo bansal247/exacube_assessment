@@ -23,8 +23,15 @@ configure_logging(settings.log_level)
 
 
 def _build_provider() -> LLMProvider:
+    # Settings._require_selected_provider_key already guaranteed the
+    # selected provider's key is non-empty -- Settings() itself would have
+    # raised at startup otherwise. The field type is str | None because an
+    # unselected provider's key is genuinely optional, not because this one
+    # can be missing here.
     if settings.llm_provider == "openai":
+        assert settings.openai_api_key is not None
         return OpenAIProvider(api_key=settings.openai_api_key, model=settings.agent_model)
+    assert settings.anthropic_api_key is not None
     return AnthropicProvider(api_key=settings.anthropic_api_key, model=settings.agent_model)
 
 

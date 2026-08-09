@@ -65,7 +65,10 @@ def make_read_only_capped(sql_text: str, max_rows: int, dialect: str = "postgres
     return _cap_limit(stmt, max_rows).sql(dialect=dialect)
 
 
-def _cap_limit(stmt: exp.Expression, max_rows: int) -> exp.Expression:
+def _cap_limit(stmt: exp.Select | exp.Union, max_rows: int) -> exp.Select | exp.Union:
+    # Narrower than exp.Expression -- matches the isinstance check the one
+    # caller already did (only SELECT/UNION ever reach here) and, unlike
+    # the base class, both actually declare .limit() as a builder method.
     existing = stmt.args.get("limit")
     if existing is not None:
         existing_value = _limit_value(existing)

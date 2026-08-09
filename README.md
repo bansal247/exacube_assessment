@@ -25,6 +25,8 @@ so running it again later never wipes a key you've already set.
 
 ```
 make test                   # pytest suite, real Postgres via testcontainers
+make lint                   # ruff, same config CI uses
+make typecheck              # mypy on api/app, same config CI uses
 make eval                   # eval harness against the live API (costs real tokens)
 make down                   # stop, keep data
 make clean                  # stop, drop volumes + locally built images
@@ -53,6 +55,9 @@ All in `.env` (copy from `.env.example`).
 | `AGENT_MAX_TOOL_RETRIES` | no | `2` | How many failed tool-call rounds the agent tolerates before giving up and answering in prose |
 | `AGENT_ROW_CAP` | no | `1000` | Max rows any agent-run SQL can return |
 | `AGENT_QUERY_TIMEOUT_MS` | no | `5000` | Statement timeout for the agent's DB connections |
+| `DB_POOL_MIN_SIZE` / `DB_POOL_MAX_SIZE` | no | `1` / `10` | API's own Postgres connection pool size |
+| `DB_STATEMENT_TIMEOUT_MS` | no | `5000` | Statement timeout for the API's own (non-agent) DB connections |
+| `AGENT_DB_POOL_MIN_SIZE` / `AGENT_DB_POOL_MAX_SIZE` | no | `1` / `10` | Agent's own Postgres connection pool size |
 | `LOG_LEVEL` | no | `INFO` | Log verbosity |
 
 Only the selected provider's key is required — missing it fails loudly at startup, not on the
@@ -205,6 +210,31 @@ doesn't ask for in-place editing. To change what a chart shows, the path is back
 ask an adjusted question, pin the new result, unpin the old one if it's no longer wanted. Pins
 stayed immutable-but-rerunnable rather than gaining their own query editor, which would have been
 a second, parallel way to construct a query outside the chat/plugin system entirely.
+
+**CI: ruff's own default rule set, not a wide one.** `select = ["E4", "E7", "E9", "F"]` —
+pyflakes plus a small pycodestyle subset — rather than turning on every rule ruff offers.
+Line-length (E501) is deliberately excluded: this codebase favors long, descriptive comments and
+docstrings over wrapping at 79/88 characters, a style choice made throughout, not something a
+first CI pass should start flagging. Widening the ruleset is a later, separate decision once the
+basics are green.
+
+**Type checking is scoped to `api/app`, not the whole repo.** `db/load.py` and `eval/run_eval.py`
+are one-shot scripts, not the core deliverable; mypy runs with `ignore_missing_imports` (asyncpg,
+sqlglot, and the two provider SDKs aren't all fully stubbed) rather than strict mode, since this
+is a first CI pass on code that wasn't written against strict typing from the start, not a
+retrofit.
+
+**Every container is non-root except one, and that one's documented, not silent.**
+`api/Dockerfile.test` stays root: it mounts the host's `/var/run/docker.sock` for testcontainers,
+and a non-root user would need its GID to match the host's `docker` group GID to use that socket
+— not knowable at build time or portable across machines. It's also dev/CI-only, never deployed,
+never handling untrusted input — the one place that tradeoff is acceptable.
+
+**Multi-stage builds on every Dockerfile, including the ones it won't measurably shrink.**
+`db/`, `eval/`, and `api/Dockerfile.test` don't have a compiled toolchain to strip out the way a
+2GB image with build tools baked in would — these are already thin. Converted them anyway to
+match the brief's own checklist literally, rather than deciding case-by-case which containers
+"deserve" it.
 
 **Two related data-quality issues in the raw CSVs** (found by inspection, not by a failed load):
 52 `(user_id, server_id)` collisions in `members.csv` — two different people sharing a generated

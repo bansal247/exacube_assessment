@@ -49,4 +49,9 @@ class Settings(BaseSettings):
         return self
 
 
-settings = Settings()
+# mypy sees database_url/agent_database_url as required __init__ params
+# (no default) and flags this as missing arguments -- it can't see that
+# BaseSettings populates them from the environment at call time, not from
+# constructor args. Known, standard false positive with pydantic-settings,
+# not a real gap -- see https://github.com/pydantic/pydantic/issues/3753.
+settings = Settings()  # type: ignore[call-arg]

@@ -39,6 +39,12 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
 
+  lint:
+    build:
+      context: .
+      dockerfile: Dockerfile.lint
+    profiles: ["tools"]
+
   api:
     build:
       context: .
@@ -54,6 +60,11 @@ services:
       AGENT_MAX_TOOL_RETRIES: ${AGENT_MAX_TOOL_RETRIES:-2}
       AGENT_ROW_CAP: ${AGENT_ROW_CAP:-1000}
       AGENT_QUERY_TIMEOUT_MS: ${AGENT_QUERY_TIMEOUT_MS:-5000}
+      DB_POOL_MIN_SIZE: ${DB_POOL_MIN_SIZE:-1}
+      DB_POOL_MAX_SIZE: ${DB_POOL_MAX_SIZE:-10}
+      DB_STATEMENT_TIMEOUT_MS: ${DB_STATEMENT_TIMEOUT_MS:-5000}
+      AGENT_DB_POOL_MIN_SIZE: ${AGENT_DB_POOL_MIN_SIZE:-1}
+      AGENT_DB_POOL_MAX_SIZE: ${AGENT_DB_POOL_MAX_SIZE:-10}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       # Browser-facing origin of the frontend (see frontend/Dockerfile) --
       # this is what CORS checks against, not a container-network address.

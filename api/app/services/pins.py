@@ -23,6 +23,11 @@ async def create_pin(conn: asyncpg.Connection, session_id: UUID, tool_call_id: s
     if target.is_error or target.data is None:
         raise BadRequestError(f"Tool call '{tool_call_id}' did not produce a result (it failed)")
 
+    # _find_tool_message only ever returns a role="tool" message, and
+    # append_messages always sets tool_name for those -- Message's own type
+    # is str | None because it's shared across all three roles, not because
+    # this can actually be missing here.
+    assert target.tool_name is not None
     plugin = get_plugin(target.tool_name)
     if plugin is None:
         raise BadRequestError(f"Plugin '{target.tool_name}' is no longer registered; cannot pin its result")

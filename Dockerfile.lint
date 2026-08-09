@@ -1,0 +1,34 @@
+FROM python:3.12-slim AS builder
+
+WORKDIR /repo
+COPY api/requirements.txt api/requirements.txt
+COPY api/dev-requirements.txt api/dev-requirements.txt
+COPY db/requirements.txt db/requirements.txt
+COPY eval/requirements.txt eval/requirements.txt
+RUN pip install --no-cache-dir --user \
+    -r api/dev-requirements.txt \
+    -r db/requirements.txt \
+    -r eval/requirements.txt
+
+FROM python:3.12-slim
+
+# Exists so `make lint`/`make typecheck` check the exact same files CI
+# does (pyproject.toml's config, api/ + db/ + eval/'s actual source) --
+# api/Dockerfile.test only copies a subset of the repo for running tests,
+# reusing it here would silently lint/typecheck a different file set than
+# CI's full checkout does.
+RUN useradd --create-home --uid 1000 appuser
+WORKDIR /repo
+
+COPY --from=builder /root/.local /home/appuser/.local
+COPY pyproject.toml ./
+COPY api/app api/app
+COPY api/tests api/tests
+COPY db/load.py db/load.py
+COPY eval/questions.py eval/run_eval.py eval/
+
+RUN chown -R appuser:appuser /repo
+USER appuser
+ENV PATH=/home/appuser/.local/bin:$PATH
+
+CMD ["ruff", "check", "."]

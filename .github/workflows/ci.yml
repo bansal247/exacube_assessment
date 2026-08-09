@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ruff==0.8.4
+      - run: ruff check .
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r api/dev-requirements.txt
+      # Scoped to api/app -- the core deliverable (agent, plugins,
+      # routers/services/repositories). db/load.py and eval/run_eval.py
+      # are one-shot scripts outside that scope for this first CI pass.
+      - run: mypy api/app
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Same path a developer runs locally (`make test`) -- real Postgres
+      # via testcontainers inside api/Dockerfile.test, not a separate
+      # CI-only test setup that could drift from what's actually shipped.
+      - run: make test

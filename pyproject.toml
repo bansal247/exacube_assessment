@@ -1,0 +1,25 @@
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+extend-exclude = ["discord_analytics_dataset"]
+
+[tool.ruff.lint]
+# Ruff's own default selection (pyflakes + a small pycodestyle subset) --
+# deliberately not a wider ruleset (e.g. "ALL") for a first CI pass on an
+# existing codebase. Line-length (E501) isn't in this default selection,
+# which matters here: this codebase favors long, descriptive comments and
+# docstrings over wrapping at 79/88 chars, a deliberate style choice, not
+# an oversight -- see any agent/*.py file. Widening the ruleset is a later,
+# separate decision once the basics are green.
+select = ["E4", "E7", "E9", "F"]
+
+[tool.mypy]
+python_version = "3.12"
+# Third-party libraries here (asyncpg, sqlglot, openai/anthropic SDKs)
+# aren't all fully typed/stubbed -- ignore_missing_imports keeps CI
+# checking *this* codebase's own type consistency without failing on gaps
+# in dependencies this project doesn't control. Not strict mode: this is a
+# first CI pass, not a retrofit of full strict typing onto code that
+# wasn't written against it from the start.
+ignore_missing_imports = true
+exclude = ["discord_analytics_dataset"]
