@@ -389,11 +389,11 @@ Two separate k6 scripts (`loadtest/`), because they have fundamentally different
 
 ## Estimated time, actual time
 
-**[PLACEHOLDER — fill in.]**
+**Started on 8th August 2026 9:50 AM, Estimated complition by night of 9th August, Complition around 10 AM of 10th of August because I wanted to test on diffrent System with running and all tests and with new plugin**
 
 ## What I'd do differently or additionally with more time
 
 - **Per-plugin dependencies as their own file, not a shared `requirements.txt` edit.** Like done in Comfy-ui plug-ins. Every plugin is a folder with its own .py, requirements and documentatation file.
 - **Include streaming also**
-
-**[PLACEHOLDER — fill in the rest.]**
+- **A better UI**
+- **Multi User support**

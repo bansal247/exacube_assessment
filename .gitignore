@@ -1,6 +1,7 @@
 .synthetic-discord-analytics-dataset.zip
-.env
 .claude
 *__pycache__/
 eval/results/*.json
 loadtest/results/*.json
+config.bat
+node_modules
